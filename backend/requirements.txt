@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+python-multipart
+langchain
+langchain-community
+langchain-postgres
+psycopg2-binary
+pgvector
+pypdf
+openpyxl
+python-docx
+ollama
+python-dotenv
+langchain-ollama

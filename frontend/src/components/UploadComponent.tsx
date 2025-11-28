@@ -1,0 +1,163 @@
+'use client';
+
+import React, { useState, useCallback } from 'react';
+import { Upload, FileText, CheckCircle, AlertCircle, Type } from 'lucide-react';
+import { uploadDocument, extractRules } from '@/lib/api';
+
+interface UploadComponentProps {
+    onUploadComplete: (data: any) => void;
+    onLoadingChange: (isLoading: boolean) => void;
+}
+
+export default function UploadComponent({ onUploadComplete, onLoadingChange }: UploadComponentProps) {
+    const [mode, setMode] = useState<'file' | 'text'>('file');
+    const [textInput, setTextInput] = useState('');
+    const [isDragging, setIsDragging] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const handleDragOver = useCallback((e: React.DragEvent) => {
+        e.preventDefault();
+        setIsDragging(true);
+    }, []);
+
+    const handleDragLeave = useCallback((e: React.DragEvent) => {
+        e.preventDefault();
+        setIsDragging(false);
+    }, []);
+
+    const handleDrop = useCallback(async (e: React.DragEvent) => {
+        e.preventDefault();
+        setIsDragging(false);
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            await handleUpload(files[0]);
+        }
+    }, []);
+
+    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files && e.target.files.length > 0) {
+            await handleUpload(e.target.files[0]);
+        }
+    };
+
+    const handleUpload = async (file: File) => {
+        onLoadingChange(true);
+        setError(null);
+        try {
+            const result = await uploadDocument(file);
+            // Pass full result to parent (contains filename, temp_path, extracted_text)
+            onUploadComplete(result);
+        } catch (err) {
+            setError('Failed to upload document. Please try again.');
+            console.error(err);
+            onLoadingChange(false);
+        }
+    };
+
+    const handleTextSubmit = async () => {
+        if (!textInput.trim()) return;
+
+        onLoadingChange(true);
+        setError(null);
+        try {
+            // Pass text directly to parent to trigger extraction
+            onUploadComplete(textInput);
+        } catch (err) {
+            setError('Failed to process text. Please try again.');
+            console.error(err);
+            onLoadingChange(false);
+        }
+    };
+
+    return (
+        <div className="w-full max-w-2xl mx-auto p-6">
+            {/* Tabs */}
+            <div className="flex mb-6 border-b border-gray-200">
+                <button
+                    onClick={() => setMode('file')}
+                    className={`pb-2 px-4 font-medium transition-colors ${mode === 'file'
+                        ? 'text-blue-600 border-b-2 border-blue-600'
+                        : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                >
+                    Upload Document
+                </button>
+                <button
+                    onClick={() => setMode('text')}
+                    className={`pb-2 px-4 font-medium transition-colors ${mode === 'text'
+                        ? 'text-blue-600 border-b-2 border-blue-600'
+                        : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                >
+                    Enter Requirements
+                </button>
+            </div>
+
+            {mode === 'file' ? (
+                <div
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    className={`
+            relative border-2 border-dashed rounded-xl p-12 text-center transition-all duration-200 ease-in-out
+            ${isDragging
+                            ? 'border-blue-500 bg-blue-50 scale-[1.02]'
+                            : 'border-gray-300 hover:border-gray-400 bg-white'
+                        }
+          `}
+                >
+                    <input
+                        type="file"
+                        id="file-upload"
+                        className="hidden"
+                        onChange={handleFileChange}
+                        accept=".pdf,.docx"
+                    />
+
+                    <div className="flex flex-col items-center gap-4">
+                        <div className={`p-4 rounded-full ${isDragging ? 'bg-blue-100' : 'bg-gray-100'}`}>
+                            <Upload className={`w-8 h-8 ${isDragging ? 'text-blue-600' : 'text-gray-500'}`} />
+                        </div>
+
+                        <div>
+                            <h3 className="text-lg font-semibold text-gray-900">
+                                Upload Insurance Document
+                            </h3>
+                            <p className="text-sm text-gray-500 mt-1">
+                                Drag and drop your PDF or DOCX here, or{' '}
+                                <label htmlFor="file-upload" className="text-blue-600 hover:text-blue-700 cursor-pointer font-medium">
+                                    browse files
+                                </label>
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            ) : (
+                <div className="bg-white rounded-xl border border-gray-200 p-4">
+                    <textarea
+                        value={textInput}
+                        onChange={(e) => setTextInput(e.target.value)}
+                        placeholder="Enter your business rules or requirements here..."
+                        className="w-full h-48 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+                    />
+                    <div className="mt-4 flex justify-end">
+                        <button
+                            onClick={handleTextSubmit}
+                            disabled={!textInput.trim()}
+                            className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+                        >
+                            Extract Rules
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {error && (
+                <div className="mt-4 flex items-center justify-center gap-2 text-red-600 text-sm bg-red-50 p-2 rounded-lg">
+                    <AlertCircle className="w-4 h-4" />
+                    <span>{error}</span>
+                </div>
+            )}
+        </div>
+    );
+}
