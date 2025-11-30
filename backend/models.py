@@ -33,6 +33,17 @@ class GenerationRequest(BaseModel):
 class ExtractionRequest(BaseModel):
     text: str
 
+class KrakenRuleRequest(BaseModel):
+    excel_data: List[dict]  # List of {summary: str, source_text: str} items
+
+class KrakenRuleResponse(BaseModel):
+    generated_rules: str
+
+class KrakenDownloadRequest(BaseModel):
+    file_name: str
+    name_space: str
+    generated_rules: str
+
 class CandidateRule(BaseModel):
     id: str
     name: str

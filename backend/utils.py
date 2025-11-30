@@ -1,6 +1,7 @@
 import os
 from pypdf import PdfReader
 from docx import Document
+from openpyxl import load_workbook
 
 def parse_pdf(file_path: str) -> str:
     try:
@@ -23,6 +24,28 @@ def parse_docx(file_path: str) -> str:
     except Exception as e:
         print(f"Error parsing DOCX: {e}")
         return ""
+
+def parse_excel(file_path: str) -> dict:
+    try:
+        wb = load_workbook(file_path)
+        ws = wb.active
+        
+        # Read C and D columns
+        data = []
+        for row in ws.iter_rows(min_row=2, values_only=True):  # Start from row 2 (skip header)
+            c_col = row[2] if len(row) > 2 else ""
+            d_col = row[3] if len(row) > 3 else ""
+            
+            if c_col or d_col:  # Only add rows with data
+                data.append({
+                    "summary": str(c_col) if c_col else "",
+                    "source_text": str(d_col) if d_col else ""
+                })
+        
+        return {"excel_data": data}
+    except Exception as e:
+        print(f"Error parsing Excel: {e}")
+        return {"excel_data": []}
 
 def parse_document(file_path: str) -> str:
     _, ext = os.path.splitext(file_path)

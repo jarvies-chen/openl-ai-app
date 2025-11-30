@@ -2,14 +2,16 @@
 
 import React, { useState } from 'react';
 import UploadComponent from '@/components/UploadComponent';
+import KrakenUploadComponent from '@/components/KrakenUploadComponent';
 import DownloadComponent from '@/components/DownloadComponent';
 import OverviewPage from '@/components/OverviewPage';
 import Stepper from '@/components/Stepper';
 import Step2Candidates from '@/components/Step2Candidates';
+import KrakenCandidatesComponent from '@/components/KrakenCandidatesComponent';
 import Step3Enrichment from '@/components/Step3Enrichment';
+import KrakenGenerateComponent from '@/components/KrakenGenerateComponent';
 import { Loader2 } from 'lucide-react';
-import {
-  extractCandidates,
+import { extractCandidates,
   enrichRules,
   saveVersion,
   getVersions,
@@ -17,7 +19,8 @@ import {
   getDocumentContent,
   CandidateRule,
   Rule,
-  Datatype
+  Datatype,
+  generateKrakenRules
 } from '@/lib/api';
 
 export default function Home() {
@@ -26,6 +29,7 @@ export default function Home() {
   const [currentStep, setCurrentStep] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('');
+  const [isKrakenMode, setIsKrakenMode] = useState(false);
 
   // Data State
   const [currentFilename, setCurrentFilename] = useState<string>('');
@@ -35,12 +39,26 @@ export default function Home() {
   const [candidates, setCandidates] = useState<CandidateRule[]>([]);
   const [rules, setRules] = useState<Rule[]>([]);
   const [datatypes, setDatatypes] = useState<Datatype[]>([]);
+  const [generatedKrakenRules, setGeneratedKrakenRules] = useState<string>('');
 
   // --- Actions ---
 
   const handleNewDocument = () => {
     setView('workflow');
     setCurrentStep(1);
+    setIsKrakenMode(false);
+    setCandidates([]);
+    setRules([]);
+    setDatatypes([]);
+    setCurrentFilename('');
+    setTempPath('');
+    setFullText('');
+  };
+
+  const handleNewKrakenDocument = () => {
+    setView('workflow');
+    setCurrentStep(1);
+    setIsKrakenMode(true);
     setCandidates([]);
     setRules([]);
     setDatatypes([]);
@@ -86,36 +104,53 @@ export default function Home() {
   };
 
   const handleUploadComplete = async (data: any) => {
-    setIsLoading(true);
-    setLoadingMessage('Extracting candidate rules...');
-    try {
-      // Handle both object (from file upload) and string (from manual entry)
-      let extractedText = '';
-      if (typeof data === 'string') {
-        extractedText = data;
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        setCurrentFilename(`Manual_Entry_${timestamp}.txt`);
-        setTempPath(''); // No temp path for manual entry
-      } else {
-        extractedText = data.extracted_text;
-        setCurrentFilename(data.filename);
-        setTempPath(data.temp_path);
-      }
+        setIsLoading(true);
+        setLoadingMessage('Extracting candidate rules...');
+        try {
+            // Handle both object (from file upload) and string (from manual entry)
+            let extractedText = '';
+            let candidates = [];
+            
+            if (typeof data === 'string') {
+                extractedText = data;
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                setCurrentFilename(`Manual_Entry_${timestamp}.txt`);
+                setTempPath(''); // No temp path for manual entry
+                
+                // Step 1 -> 2: Extract Candidates for manual entry
+                candidates = await extractCandidates(extractedText);
+            } else if (data.candidates) {
+                // Handle Kraken upload with pre-extracted candidates
+                extractedText = data.candidates.map((c: any) => c.summary).join('\n');
+                setCurrentFilename(data.filename);
+                setTempPath(data.temp_path);
+                
+                // Use pre-extracted candidates from Kraken upload
+                candidates = data.candidates.map((c: any) => ({
+                    ...c,
+                    selected: true // Default to selected
+                }));
+            } else {
+                // Handle regular upload
+                extractedText = data.extracted_text;
+                setCurrentFilename(data.filename);
+                setTempPath(data.temp_path);
+                
+                // Step 1 -> 2: Extract Candidates
+                candidates = await extractCandidates(extractedText);
+            }
 
-      setFullText(extractedText);
-
-      // Step 1 -> 2: Extract Candidates
-      const extractedCandidates = await extractCandidates(extractedText);
-      setCandidates(extractedCandidates);
-      setCurrentStep(2);
-    } catch (error) {
-      console.error("Failed to extract candidates", error);
-      alert("Failed to extract rules");
-    } finally {
-      setIsLoading(false);
-      setLoadingMessage('');
-    }
-  };
+            setFullText(extractedText);
+            setCandidates(candidates);
+            setCurrentStep(2);
+        } catch (error) {
+            console.error("Failed to extract candidates", error);
+            alert("Failed to extract rules");
+        } finally {
+            setIsLoading(false);
+            setLoadingMessage('');
+        }
+    };
 
   const handleEnrich = async () => {
     setIsLoading(true);
@@ -160,9 +195,37 @@ export default function Home() {
   };
 
   const handleGenerate = async () => {
-    // Step 3 -> 4: Just proceed to download, NO auto-save
-    setCurrentStep(4);
-  };
+        // Step 3 -> 4: Just proceed to download, NO auto-save
+        setCurrentStep(4);
+    };
+
+    const handleGenerateKrakenRules = async () => {
+        setIsLoading(true);
+        setLoadingMessage('Generating Kraken Rules...');
+        try {
+            // Prepare the candidates data in the format expected by the API
+            const excelData = candidates.map(rule => ({
+                summary: rule.summary,
+                source_text: rule.source_text
+            }));
+
+            // Call the generateKrakenRules API
+            const result = await generateKrakenRules(excelData);
+            
+            // Store the generated rules
+            setGeneratedKrakenRules(result.generated_rules);
+            console.log('Generated Kraken Rules:', result.generated_rules);
+            
+            // Step 2 -> 3: Proceed to the next step
+            setCurrentStep(3);
+        } catch (error) {
+            console.error("Failed to generate Kraken Rules", error);
+            alert("Failed to generate Kraken Rules");
+        } finally {
+            setIsLoading(false);
+            setLoadingMessage('');
+        }
+    };
 
   // --- Render ---
 
@@ -171,6 +234,7 @@ export default function Home() {
       <OverviewPage
         onNewDocument={handleNewDocument}
         onSelectDocument={handleSelectDocument}
+        onNewKrakenDocument={handleNewKrakenDocument}
       />
     );
   }
@@ -208,54 +272,99 @@ export default function Home() {
 
         {currentStep === 1 && (
           <div className="max-w-2xl mx-auto mt-8">
-            <UploadComponent
-              onUploadComplete={(data) => handleUploadComplete(data)}
-              onLoadingChange={(loading) => {
-                setIsLoading(loading);
-                if (loading) setLoadingMessage('Uploading...');
-              }}
-            />
+            {isKrakenMode ? (
+              <KrakenUploadComponent
+                onUploadComplete={(data) => handleUploadComplete(data)}
+                onLoadingChange={(loading) => {
+                  setIsLoading(loading);
+                  if (loading) setLoadingMessage('Uploading Kraken document...');
+                }}
+              />
+            ) : (
+              <UploadComponent
+                onUploadComplete={(data) => handleUploadComplete(data)}
+                onLoadingChange={(loading) => {
+                  setIsLoading(loading);
+                  if (loading) setLoadingMessage('Uploading...');
+                }}
+              />
+            )}
           </div>
         )}
 
         {currentStep === 2 && (
-          <Step2Candidates
-            candidates={candidates}
-            onNext={handleEnrich}
-            loading={isLoading}
-            fullText={fullText}
-          />
+          isKrakenMode ? (
+            <KrakenCandidatesComponent
+              candidates={candidates}
+              onNext={handleEnrich}
+              onGenerateKrakenRules={handleGenerateKrakenRules}
+              loading={isLoading}
+              fullText={fullText}
+            />
+          ) : (
+            <Step2Candidates
+              candidates={candidates}
+              onNext={handleEnrich}
+              loading={isLoading}
+              fullText={fullText}
+            />
+          )
         )}
 
         {currentStep === 3 && (
-          <Step3Enrichment
-            rules={rules}
-            datatypes={datatypes}
-            onUpdateRule={(updatedRule) => setRules(rules.map(r => r.id === updatedRule.id ? updatedRule : r))}
-            onNext={handleGenerate}
-            onSave={handleSaveVersion}
-            loading={isLoading}
-            fullText={fullText}
-            filename={currentFilename}
-          />
+          isKrakenMode ? (
+            <KrakenGenerateComponent
+              rules={rules}
+              datatypes={datatypes}
+              onUpdateRule={(updatedRule) => setRules(rules.map(r => r.id === updatedRule.id ? updatedRule : r))}
+              onNext={handleGenerate}
+              onSave={handleSaveVersion}
+              loading={isLoading}
+              fullText={fullText}
+              filename={currentFilename}
+              generatedKrakenRules={generatedKrakenRules}
+            />
+          ) : (
+            <Step3Enrichment
+              rules={rules}
+              datatypes={datatypes}
+              onUpdateRule={(updatedRule) => setRules(rules.map(r => r.id === updatedRule.id ? updatedRule : r))}
+              onNext={handleGenerate}
+              onSave={handleSaveVersion}
+              loading={isLoading}
+              fullText={fullText}
+              filename={currentFilename}
+            />
+          )
         )}
 
         {currentStep === 4 && (
           <div className="max-w-2xl mx-auto mt-12 text-center">
             <div className="bg-white p-8 rounded-xl border border-gray-200 shadow-sm">
-              <h2 className="text-2xl font-bold text-gray-900 mb-4">Ready to Generate</h2>
-              <p className="text-gray-600 mb-8">
-                Your rules are ready. Click below to download the OpenL Excel file.
-              </p>
-              <div className="flex justify-center">
-                <DownloadComponent
-                  selectedRules={rules.filter(r => r.selected)}
-                  selectedDatatypes={datatypes}
-                />
-              </div>
+              {isKrakenMode ? (
+                <>
+                  <h2 className="text-2xl font-bold text-gray-900 mb-4">Kraken Rules Generated</h2>
+                  <p className="text-gray-600 mb-8">
+                    Your Kraken rules have been successfully generated and downloaded.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <h2 className="text-2xl font-bold text-gray-900 mb-4">Ready to Generate</h2>
+                  <p className="text-gray-600 mb-8">
+                    Your rules are ready. Click below to download the OpenL Excel file.
+                  </p>
+                  <div className="flex justify-center mb-8">
+                    <DownloadComponent
+                      selectedRules={rules.filter(r => r.selected)}
+                      selectedDatatypes={datatypes}
+                    />
+                  </div>
+                </>
+              )}
               <button
                 onClick={() => setView('overview')}
-                className="mt-8 text-blue-600 hover:text-blue-700 font-medium"
+                className="text-blue-600 hover:text-blue-700 font-medium"
               >
                 Return to Dashboard
               </button>

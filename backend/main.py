@@ -28,7 +28,7 @@ app.add_middleware(
 )
 
 # Models
-from models import Rule, Datatype, DatatypeField, ExtractionResponse, GenerationRequest, ExtractionRequest, CandidateRule, EnrichmentRequest, CandidateList, SaveVersionRequest
+from models import Rule, Datatype, DatatypeField, ExtractionResponse, GenerationRequest, ExtractionRequest, CandidateRule, EnrichmentRequest, CandidateList, SaveVersionRequest, KrakenRuleRequest, KrakenRuleResponse, KrakenDownloadRequest
 
 # Initialize LLM
 ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -60,6 +60,43 @@ async def upload_document(file: UploadFile = File(...)):
     try:
         text = parse_document(file_location)
         return {"filename": file.filename, "temp_path": file_location, "extracted_text": text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/kraken-upload")
+async def kraken_upload(file: UploadFile = File(...)):
+    file_location = f"temp_kraken_{file.filename}"
+    with open(file_location, "wb+") as file_object:
+        shutil.copyfileobj(file.file, file_object)
+    
+    try:
+        # Check if it's an Excel file
+        _, ext = os.path.splitext(file.filename)
+        ext = ext.lower()
+        
+        if ext not in ['.xlsx', '.xls']:
+            raise HTTPException(status_code=400, detail="Only Excel files (.xlsx, .xls) are supported")
+        
+        # Parse Excel file
+        from utils import parse_excel
+        excel_data = parse_excel(file_location)
+        
+        # Convert to candidate rules format
+        candidate_rules = []
+        for i, item in enumerate(excel_data["excel_data"], 1):
+            candidate_rules.append({
+                "id": f"Rule-{i:02d}",
+                "name": f"Rule-{i:02d}",
+                "summary": item["summary"],
+                "source_text": item["source_text"]
+            })
+        
+        # Return in the same format as extract-candidates
+        return {
+            "filename": file.filename,
+            "temp_path": file_location,
+            "candidates": candidate_rules
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     # Note: We don't delete temp file here immediately if we want to use it for versioning later, 
@@ -299,6 +336,61 @@ async def enrich_rules(request: EnrichmentRequest):
                     r['id'] = f"Rule-{i:02d}"
         
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/generate-kraken-rules", response_model=KrakenRuleResponse)
+async def generate_kraken_rules(request: KrakenRuleRequest):
+    try:
+        # Read the Kraken rule prompt file
+        with open("kraken_rule_prompt.md", "r", encoding="utf-8") as f:
+            prompt_template = f.read()
+        
+        # Format the Excel data into a string
+        excel_data_str = "\n".join([f"{item['summary']}\n{item['source_text']}" for item in request.excel_data])
+        
+        # Combine the prompt template with the Excel data
+        full_prompt = f"{prompt_template}\n\nPlease generate the following Kraken rule based on the Kraken rule above:\n\n{excel_data_str}"
+        
+        # Print full_prompt to log
+        print("\n=== Full Prompt for Kraken Rules Generation ===")
+        print(full_prompt)
+        print("=== End of Full Prompt ===\n")
+        
+        # Call Ollama API directly without parsing (we want raw text response)
+        chain = PromptTemplate(
+            template="{prompt}",
+            input_variables=["prompt"]
+        ) | llm
+        
+        result = chain.invoke({"prompt": full_prompt})
+        print("The result is:\n")
+        print(result)
+        
+        # Return the generated rules as raw text
+        return KrakenRuleResponse(generated_rules=result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/kraken-download")
+async def kraken_download(request: KrakenDownloadRequest):
+    try:
+        # Create the content with namespace as first line
+        content = f"Namespace {request.name_space}\n\n{request.generated_rules}"
+        
+        # Ensure the generated directory exists
+        os.makedirs("generated", exist_ok=True)
+        
+        # Generate the file path with the provided file name
+        filename = request.file_name
+        file_path = os.path.join("generated", filename)
+        
+        # Write the content to the file
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        
+        # Return the download URL
+        return {"status": "success", "download_url": f"/download/{filename}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
