@@ -5,9 +5,10 @@ import { FileText, Clock, ChevronRight, Trash2, Plus } from 'lucide-react';
 interface OverviewPageProps {
     onSelectDocument: (filename: string) => void;
     onNewDocument: () => void;
+    onNewKrakenDocument: () => void;
 }
 
-const OverviewPage: React.FC<OverviewPageProps> = ({ onSelectDocument, onNewDocument }) => {
+const OverviewPage: React.FC<OverviewPageProps> = ({ onSelectDocument, onNewDocument, onNewKrakenDocument }) => {
     const [documents, setDocuments] = useState<DocumentSummary[]>([]);
     const [loading, setLoading] = useState(false);
 
@@ -52,13 +53,22 @@ const OverviewPage: React.FC<OverviewPageProps> = ({ onSelectDocument, onNewDocu
                     <h1 className="text-2xl font-bold text-gray-900">OpenL Rules Manager</h1>
                     <p className="text-gray-500 mt-1">Manage your insurance policy documents and rules</p>
                 </div>
-                <button
-                    onClick={onNewDocument}
-                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
-                >
-                    <Plus className="w-5 h-5" />
-                    New Document
-                </button>
+                <div className="flex gap-3">
+                    <button
+                        onClick={onNewDocument}
+                        className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
+                    >
+                        <Plus className="w-5 h-5" />
+                        New Document
+                    </button>
+                    <button
+                        onClick={onNewKrakenDocument}
+                        className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors shadow-sm"
+                    >
+                        <Plus className="w-5 h-5" />
+                        New Kraken Document
+                    </button>
+                </div>
             </div>
 
             {loading ? (
@@ -68,12 +78,21 @@ const OverviewPage: React.FC<OverviewPageProps> = ({ onSelectDocument, onNewDocu
                     <FileText className="w-12 h-12 text-gray-400 mx-auto mb-4" />
                     <h3 className="text-lg font-medium text-gray-900">No documents yet</h3>
                     <p className="text-gray-500 mt-1 mb-6">Upload a policy document to get started</p>
-                    <button
-                        onClick={onNewDocument}
-                        className="text-blue-600 hover:text-blue-700 font-medium"
-                    >
-                        Upload your first document
-                    </button>
+                    <div className="flex justify-center gap-4">
+                        <button
+                            onClick={onNewDocument}
+                            className="text-blue-600 hover:text-blue-700 font-medium"
+                        >
+                            Upload your first document
+                        </button>
+                        <span className="text-gray-300">|</span>
+                        <button
+                            onClick={onNewKrakenDocument}
+                            className="text-green-600 hover:text-green-700 font-medium"
+                        >
+                            Create Kraken document
+                        </button>
+                    </div>
                 </div>
             ) : (
                 <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">

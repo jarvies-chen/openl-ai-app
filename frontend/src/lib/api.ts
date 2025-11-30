@@ -4,9 +4,9 @@ import axios from 'axios';
 // If running on server side (SSR), default to localhost
 const getBaseUrl = () => {
   if (typeof window !== 'undefined') {
-    return `http://${window.location.hostname}:8099`;
+    return `http://${window.location.hostname}:8000`;
   }
-  return 'http://localhost:8099';
+  return 'http://localhost:8000';
 };
 
 export const api = axios.create({
@@ -55,6 +55,17 @@ export const uploadDocument = async (file: File) => {
   const formData = new FormData();
   formData.append('file', file);
   const response = await api.post('/upload', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+  });
+  return response.data;
+};
+
+export const krakenUploadDocument = async (file: File) => {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await api.post('/kraken-upload', formData, {
     headers: {
       'Content-Type': 'multipart/form-data',
     },
@@ -159,5 +170,15 @@ export const enrichRules = async (rules: CandidateRule[], text: string): Promise
 
 export const deleteDocument = async (filename: string) => {
   const response = await api.delete(`/delete-document/${encodeURIComponent(filename)}`);
+  return response.data;
+};
+
+export const generateKrakenRules = async (excelData: { summary: string; source_text: string }[]) => {
+  const response = await api.post('/generate-kraken-rules', { excel_data: excelData });
+  return response.data;
+};
+
+export const krakenDownload = async (data: { file_name: string; name_space: string; generated_rules: string }) => {
+  const response = await api.post('/kraken-download', data);
   return response.data;
 };
