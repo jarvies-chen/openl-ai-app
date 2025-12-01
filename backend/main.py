@@ -151,8 +151,7 @@ async def get_versions(filename: str):
 @app.get("/rules/{filename}/{version}", response_model=List[Rule])
 async def get_rules_version(filename: str, version: int):
     rules = doc_manager.get_rules(filename, version)
-    if not rules:
-        raise HTTPException(status_code=404, detail="Rules not found for this version")
+    # Return empty array for Kraken documents or documents without rules, don't raise 404
     return rules
 
 @app.get("/diff/{filename}/{v_old}/{v_new}", response_model=DiffResult)
@@ -160,11 +159,9 @@ async def get_diff(filename: str, v_old: int, v_new: int):
     old_rules = doc_manager.get_rules(filename, v_old)
     new_rules = doc_manager.get_rules(filename, v_new)
     
-    if not old_rules and v_old != 0: # v_old=0 could mean "nothing"
-        raise HTTPException(status_code=404, detail="Old version rules not found")
-    if not new_rules:
-        raise HTTPException(status_code=404, detail="New version rules not found")
-        
+    # For Kraken documents, get_rules returns empty array, which is expected
+    # Don't raise 404, just generate the diff (which will be empty)
+    
     return RuleDiffer.diff(old_rules, new_rules)
 
 @app.get("/rule-history/{filename}/{rule_id}")
@@ -882,14 +879,6 @@ async def download_file(filename: str):
         return FileResponse(file_path, filename=filename)
     raise HTTPException(status_code=404, detail="File not found")
         
-embedding_model = os.getenv("EMBEDDING_MODEL", "mxbai-embed-large:latest")
-
-embeddings = OllamaEmbeddings(
-    base_url=ollama_base_url,
-    model=embedding_model,
-    # headers={"Authorization": f"Bearer {ollama_api_key}"} if ollama_api_key else None
-)
-
 # Connection string for pgvector
 DB_USER = os.getenv("PG_USER", "user")
 DB_PASSWORD = os.getenv("PG_PASSWORD", "password")
@@ -898,6 +887,14 @@ DB_PORT = os.getenv("PG_PORT", "5432")
 DB_NAME = os.getenv("PG_DB", "openl_rag")
 
 CONNECTION_STRING = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
+embedding_model = os.getenv("EMBEDDING_MODEL", "mxbai-embed-large:latest")
+
+embeddings = OllamaEmbeddings(
+    base_url=ollama_base_url,
+    model=embedding_model,
+    # headers={"Authorization": f"Bearer {ollama_api_key}"} if ollama_api_key else None
+)
 
 def get_vector_store():
     return PGVector(

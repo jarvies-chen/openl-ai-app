@@ -62,5 +62,20 @@ def parse_document(file_path: str) -> str:
         except Exception as e:
             print(f"Error parsing TXT: {e}")
             return ""
+    elif ext in ['.xlsx', '.xls']:
+        try:
+            # For Excel files, return a string representation of the data
+            excel_data = parse_excel(file_path)
+            text = ""
+            for i, item in enumerate(excel_data["excel_data"], 1):
+                text += f"Rule {i}:\n"
+                text += f"Summary: {item['summary']}\n"
+                text += f"Source Text: {item['source_text']}\n\n"
+            return text
+        except Exception as e:
+            print(f"Error parsing Excel: {e}")
+            return ""
     else:
-        raise ValueError(f"Unsupported file format: {ext}")
+        # Return empty string for unsupported formats instead of raising error
+        print(f"Unsupported file format: {ext}, returning empty string")
+        return ""

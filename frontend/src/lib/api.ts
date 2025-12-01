@@ -4,9 +4,9 @@ import axios from 'axios';
 // If running on server side (SSR), default to localhost
 const getBaseUrl = () => {
   if (typeof window !== 'undefined') {
-    return `http://${window.location.hostname}:8000`;
+    return `http://${window.location.hostname}:8099`;
   }
-  return 'http://localhost:8000';
+  return 'http://localhost:8099';
 };
 
 export const api = axios.create({

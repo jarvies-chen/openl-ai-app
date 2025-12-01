@@ -68,40 +68,61 @@ export default function Home() {
   };
 
   const handleSelectDocument = async (filename: string) => {
-    setIsLoading(true);
-    setLoadingMessage('Loading document...');
-    try {
-      const versions = await getVersions(filename);
-      if (versions.length > 0) {
-        const latest = versions.sort((a, b) => b.version - a.version)[0];
-        const loadedRules = await getRulesVersion(filename, latest.version);
-
-        // Load original text content
+        setIsLoading(true);
+        setLoadingMessage('Loading document...');
         try {
-          const docContent = await getDocumentContent(filename, latest.version);
-          setFullText(docContent.content);
-        } catch (e) {
-          console.error("Failed to load document content", e);
-          setFullText("Source text not available.");
+            const versions = await getVersions(filename);
+            if (versions.length > 0) {
+                const latest = versions.sort((a, b) => b.version - a.version)[0];
+                const loadedRules = await getRulesVersion(filename, latest.version);
+
+                // Load original text content
+                try {
+                    const docContent = await getDocumentContent(filename, latest.version);
+                    setFullText(docContent.content);
+                } catch (e) {
+                    console.error("Failed to load document content", e);
+                    setFullText("Source text not available.");
+                }
+
+                setCurrentFilename(filename);
+                setRules(loadedRules);
+                // We don't have datatypes stored separately in version history currently (it just stores rules).
+                // For now, we might lose datatypes if we reload. 
+                // TODO: Update backend to store datatypes or infer them.
+
+                // Determine if this is a Kraken document by checking if any rule has Kraken content (case-insensitive)
+                const isKrakenDoc = loadedRules.some(rule => 
+                    rule.condition && rule.condition.toLowerCase().includes('kraken')
+                );
+                setIsKrakenMode(isKrakenDoc);
+                
+                // If it's a Kraken document, extract the generated Kraken rules from the loaded rules
+                if (isKrakenDoc) {
+                    // Find the first rule that contains Kraken content in its condition
+                    const krakenRule = loadedRules.find(rule => 
+                        rule.condition && rule.condition.toLowerCase().includes('kraken')
+                    );
+                    // Set the generatedKrakenRules state with the Kraken content from the rule condition
+                    if (krakenRule?.condition) {
+                        // Set the generatedKrakenRules state with the Kraken content from the rule condition
+                        // Simple approach: use the entire condition content
+                        // This ensures we always have the Kraken Rule Content available
+                        setGeneratedKrakenRules(krakenRule.condition);
+                    }
+                }
+
+                setView('workflow');
+                setCurrentStep(3); // Jump to Enrichment/Review
+            }
+        } catch (error) {
+            console.error("Failed to load document", error);
+            alert("Failed to load document");
+        } finally {
+            setIsLoading(false);
+            setLoadingMessage('');
         }
-
-        setCurrentFilename(filename);
-        setRules(loadedRules);
-        // We don't have datatypes stored separately in version history currently (it just stores rules).
-        // For now, we might lose datatypes if we reload. 
-        // TODO: Update backend to store datatypes or infer them.
-
-        setView('workflow');
-        setCurrentStep(3); // Jump to Enrichment/Review
-      }
-    } catch (error) {
-      console.error("Failed to load document", error);
-      alert("Failed to load document");
-    } finally {
-      setIsLoading(false);
-      setLoadingMessage('');
-    }
-  };
+    };
 
   const handleUploadComplete = async (data: any) => {
         setIsLoading(true);
@@ -143,6 +164,15 @@ export default function Home() {
             setFullText(extractedText);
             setCandidates(candidates);
             setCurrentStep(2);
+            
+            // Only save version automatically for non-Kraken documents at this stage
+            // Kraken documents will be saved after rules are generated in handleGenerateKrakenRules
+            if (!data.candidates) {
+                // Use the actual values that were just calculated, not the state variables which are asynchronous
+                const filenameToSave = typeof data === 'string' ? `Manual_Entry_${new Date().toISOString().replace(/[:.]/g, '-')}.txt` : data.filename;
+                const tempPathToSave = typeof data === 'string' ? '' : data.temp_path;
+                await saveVersion(filenameToSave, rules, tempPathToSave, extractedText, 'Initial upload');
+            }
         } catch (error) {
             console.error("Failed to extract candidates", error);
             alert("Failed to extract rules");
@@ -215,6 +245,22 @@ export default function Home() {
             // Store the generated rules
             setGeneratedKrakenRules(result.generated_rules);
             console.log('Generated Kraken Rules:', result.generated_rules);
+            
+            // Save version automatically for Kraken rules
+            // Convert candidates to rules format for version control
+            const krakenRules = candidates.map((candidate, index) => ({
+                id: candidate.id || `Rule-${index + 1}`,
+                name: candidate.name || `Rule-${index + 1}`,
+                summary: candidate.summary,
+                source_text: candidate.source_text,
+                // Store the generated Kraken rule in the condition field for version comparison
+                condition: result.generated_rules,
+                selected: true,
+                rule_type: 'SmartRules'
+            }));
+            // Save the generated Kraken rules as the text content for this version
+            // For Kraken rules, we don't need the tempPath since we're using the generated content directly
+            await saveVersion(currentFilename, krakenRules, undefined, result.generated_rules, 'Generated Kraken rules');
             
             // Step 2 -> 3: Proceed to the next step
             setCurrentStep(3);
