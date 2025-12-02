@@ -78,12 +78,26 @@ const KrakenGenerateComponent: React.FC<KrakenGenerateComponentProps> = ({ rules
         }
     };
 
-    // Extract Kraken rules from the generated text
+    // Extract Kraken rules from the generated text, only show content between ```kraken and ```
     const extractKrakenRules = () => {
         if (!generatedKrakenRules) return '';
         
-        // Simple approach: return the entire generated content
-        // This ensures we always show the Kraken Rule Content
+        // Regex pattern to match content between ```kraken and ``` delimiters
+        // Handles both Windows (\r\n) and Unix (\n) line endings
+        const krakenRegex = /```kraken[\r\n]+([\s\S]*?)```/g;
+        const matches = generatedKrakenRules.match(krakenRegex);
+        
+        if (matches) {
+            // Extract the content between the delimiters and join if multiple matches
+            return matches
+                .map(match => {
+                    // Remove the delimiters while preserving proper line endings
+                    return match.replace(/```kraken[\r\n]+/, '').replace(/```$/, '');
+                })
+                .join('\n\n');
+        }
+        
+        // If no delimiters found, return the entire content as fallback
         return generatedKrakenRules;
     };
 

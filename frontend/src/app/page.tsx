@@ -105,10 +105,25 @@ export default function Home() {
                     );
                     // Set the generatedKrakenRules state with the Kraken content from the rule condition
                     if (krakenRule?.condition) {
-                        // Set the generatedKrakenRules state with the Kraken content from the rule condition
-                        // Simple approach: use the entire condition content
-                        // This ensures we always have the Kraken Rule Content available
-                        setGeneratedKrakenRules(krakenRule.condition);
+                        // Extract only the content between ```kraken and ``` delimiters
+                        // Regex pattern to match content between ```kraken and ``` delimiters
+                        // Handles both Windows (\r\n) and Unix (\n) line endings
+                        const krakenRegex = /```kraken[\r\n]+([\s\S]*?)```/g;
+                        const matches = krakenRule.condition.match(krakenRegex);
+                        
+                        if (matches) {
+                            // Extract the content between the delimiters and join if multiple matches
+                            const extractedContent = matches
+                                .map(match => {
+                                    // Remove the delimiters while preserving proper line endings
+                                    return match.replace(/```kraken[\r\n]+/, '').replace(/```$/, '');
+                                })
+                                .join('\n\n');
+                            setGeneratedKrakenRules(extractedContent);
+                        } else {
+                            // If no delimiters found, use the entire condition as fallback
+                            setGeneratedKrakenRules(krakenRule.condition);
+                        }
                     }
                 }
 
@@ -225,8 +240,12 @@ export default function Home() {
   };
 
   const handleGenerate = async () => {
-        // Step 3 -> 4: Just proceed to download, NO auto-save
-        setCurrentStep(4);
+        // For Kraken mode, we don't go to step 4, we stay on step 3 for download
+        if (!isKrakenMode) {
+            // Step 3 -> 4: Just proceed to download, NO auto-save
+            setCurrentStep(4);
+        }
+        // For Kraken mode, do nothing - we stay on step 3
     };
 
     const handleGenerateKrakenRules = async () => {
@@ -302,7 +321,7 @@ export default function Home() {
             <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold">
               OL
             </div>
-            <h1 className="text-xl font-bold text-gray-900">OpenL AI Assistant</h1>
+            <h1 className="text-xl font-bold text-gray-900">AI Assistant</h1>
           </div>
           <button
             onClick={() => setView('overview')}
@@ -314,7 +333,7 @@ export default function Home() {
       </header>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <Stepper currentStep={currentStep} steps={['Upload', 'Review Candidates', 'Enrich Rules', 'Generate']} />
+        <Stepper currentStep={currentStep} steps={isKrakenMode ? ['Upload', 'Review Candidates', 'Generate Kraken Rules'] : ['Upload', 'Review Candidates', 'Enrich Rules', 'Generate']} />
 
         {currentStep === 1 && (
           <div className="max-w-2xl mx-auto mt-8">
@@ -384,30 +403,19 @@ export default function Home() {
           )
         )}
 
-        {currentStep === 4 && (
+        {currentStep === 4 && !isKrakenMode && (
           <div className="max-w-2xl mx-auto mt-12 text-center">
             <div className="bg-white p-8 rounded-xl border border-gray-200 shadow-sm">
-              {isKrakenMode ? (
-                <>
-                  <h2 className="text-2xl font-bold text-gray-900 mb-4">Kraken Rules Generated</h2>
-                  <p className="text-gray-600 mb-8">
-                    Your Kraken rules have been successfully generated and downloaded.
-                  </p>
-                </>
-              ) : (
-                <>
-                  <h2 className="text-2xl font-bold text-gray-900 mb-4">Ready to Generate</h2>
-                  <p className="text-gray-600 mb-8">
-                    Your rules are ready. Click below to download the OpenL Excel file.
-                  </p>
-                  <div className="flex justify-center mb-8">
-                    <DownloadComponent
-                      selectedRules={rules.filter(r => r.selected)}
-                      selectedDatatypes={datatypes}
-                    />
-                  </div>
-                </>
-              )}
+              <h2 className="text-2xl font-bold text-gray-900 mb-4">Ready to Generate</h2>
+              <p className="text-gray-600 mb-8">
+                Your rules are ready. Click below to download the OpenL Excel file.
+              </p>
+              <div className="flex justify-center mb-8">
+                <DownloadComponent
+                  selectedRules={rules.filter(r => r.selected)}
+                  selectedDatatypes={datatypes}
+                />
+              </div>
               <button
                 onClick={() => setView('overview')}
                 className="text-blue-600 hover:text-blue-700 font-medium"

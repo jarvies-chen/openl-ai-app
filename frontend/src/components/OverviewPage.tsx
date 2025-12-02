@@ -50,7 +50,7 @@ const OverviewPage: React.FC<OverviewPageProps> = ({ onSelectDocument, onNewDocu
         <div className="max-w-4xl mx-auto px-4 py-8">
             <div className="flex justify-between items-center mb-8">
                 <div>
-                    <h1 className="text-2xl font-bold text-gray-900">OpenL Rules Manager</h1>
+                    <h1 className="text-2xl font-bold text-gray-900">OpenL Rules Engine</h1>
                     <p className="text-gray-500 mt-1">Manage your insurance policy documents and rules</p>
                 </div>
                 <div className="flex gap-3">
@@ -59,14 +59,14 @@ const OverviewPage: React.FC<OverviewPageProps> = ({ onSelectDocument, onNewDocu
                         className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
                     >
                         <Plus className="w-5 h-5" />
-                        New Document
+                        New (Openl) Document
                     </button>
                     <button
                         onClick={onNewKrakenDocument}
                         className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors shadow-sm"
                     >
                         <Plus className="w-5 h-5" />
-                        New Kraken Document
+                        New (Kraken) Document
                     </button>
                 </div>
             </div>
