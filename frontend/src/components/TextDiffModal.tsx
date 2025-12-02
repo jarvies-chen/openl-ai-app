@@ -26,7 +26,7 @@ const TextDiffModal: React.FC<TextDiffModalProps> = ({ isOpen, oldContent, newCo
     const oldKrakenContent = extractKrakenContent(oldContent);
     const newKrakenContent = extractKrakenContent(newContent);
 
-    // Simple line-by-line diff algorithm
+    // Simple line-by-line diff algorithm with whitespace trimming per line
     const getDiffLines = () => {
         const oldLines = oldKrakenContent.split('\n');
         const newLines = newKrakenContent.split('\n');
@@ -36,12 +36,16 @@ const TextDiffModal: React.FC<TextDiffModalProps> = ({ isOpen, oldContent, newCo
         for (let i = 0; i < maxLines; i++) {
             const oldLine = oldLines[i] || '';
             const newLine = newLines[i] || '';
+            
+            // Trim whitespace from both ends for comparison
+            const trimmedOldLine = oldLine.trim();
+            const trimmedNewLine = newLine.trim();
 
-            if (oldLine === newLine) {
+            if (trimmedOldLine === trimmedNewLine) {
                 diffLines.push({ type: 'unchanged', line: oldLine, lineNumber: i + 1 });
-            } else if (!newLine) {
+            } else if (!trimmedNewLine) {
                 diffLines.push({ type: 'removed', line: oldLine, lineNumber: i + 1 });
-            } else if (!oldLine) {
+            } else if (!trimmedOldLine) {
                 diffLines.push({ type: 'added', line: newLine, lineNumber: i + 1 });
             } else {
                 diffLines.push({ type: 'removed', line: oldLine, lineNumber: i + 1 });
