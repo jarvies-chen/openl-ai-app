@@ -26,6 +26,13 @@ CapDentalProcedureEntity.priorProsthesisPlacementDate
 Rule description: Hidden this field When CapDentalClaimDataEntity.transactionType != "OrthodonticServices"
 RuleName:HidePriorProsthesisPlacement
 
+CapDentalOtherInsuranceInfoEntity.otherInsurerEmail	
+Rule1: 
+Rule description: Validate email format must has . and @ 
+Error Message: Unsupported email address format
+RuleName:OtherInsurerEmailMask
+
+
 Generation:
 Rule "ReceivedDateMandatory" On CapDentalBaseClaimData.receivedDate {
 Description "Field is mandatory"
@@ -48,5 +55,10 @@ Rule "HidePriorProsthesisPlacement" On CapDentalProcedureEntity.priorProsthesisP
   Description "Display only when Claim Type is Orthodontic Services"
   When CapDentalClaimDataEntity.transactionType != "OrthodonticServices"
   Set Hidden
+}
+
+Rule "OtherInsurerEmailMask" on CapDentalOtherInsuranceInfoEntity.otherInsurerEmail {
+  Assert Matches "[^\r\n\s@]{1,64}@[^\s\r\n@]+\.[^\s\r\n@]+"
+  Error "OtherInsurerEmailMask": "Unsupported email address format"
 }
 Please generate the following Kraken rule based on the Kraken rule above:
