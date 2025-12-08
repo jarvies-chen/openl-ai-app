@@ -11,7 +11,8 @@ import KrakenCandidatesComponent from '@/components/KrakenCandidatesComponent';
 import Step3Enrichment from '@/components/Step3Enrichment';
 import KrakenGenerateComponent from '@/components/KrakenGenerateComponent';
 import { Loader2 } from 'lucide-react';
-import { extractCandidates,
+import {
+  extractCandidates,
   enrichRules,
   saveVersion,
   getVersions,
@@ -68,134 +69,134 @@ export default function Home() {
   };
 
   const handleSelectDocument = async (filename: string) => {
-        setIsLoading(true);
-        setLoadingMessage('Loading document...');
+    setIsLoading(true);
+    setLoadingMessage('Loading document...');
+    try {
+      const versions = await getVersions(filename);
+      if (versions.length > 0) {
+        const latest = versions.sort((a, b) => b.version - a.version)[0];
+        const loadedRules = await getRulesVersion(filename, latest.version);
+
+        // Load original text content
         try {
-            const versions = await getVersions(filename);
-            if (versions.length > 0) {
-                const latest = versions.sort((a, b) => b.version - a.version)[0];
-                const loadedRules = await getRulesVersion(filename, latest.version);
-
-                // Load original text content
-                try {
-                    const docContent = await getDocumentContent(filename, latest.version);
-                    setFullText(docContent.content);
-                } catch (e) {
-                    console.error("Failed to load document content", e);
-                    setFullText("Source text not available.");
-                }
-
-                setCurrentFilename(filename);
-                setRules(loadedRules);
-                // We don't have datatypes stored separately in version history currently (it just stores rules).
-                // For now, we might lose datatypes if we reload. 
-                // TODO: Update backend to store datatypes or infer them.
-
-                // Determine if this is a Kraken document by checking if any rule has Kraken content (case-insensitive)
-                const isKrakenDoc = loadedRules.some(rule => 
-                    rule.condition && rule.condition.toLowerCase().includes('kraken')
-                );
-                setIsKrakenMode(isKrakenDoc);
-                
-                // If it's a Kraken document, extract the generated Kraken rules from the loaded rules
-                if (isKrakenDoc) {
-                    // Find the first rule that contains Kraken content in its condition
-                    const krakenRule = loadedRules.find(rule => 
-                        rule.condition && rule.condition.toLowerCase().includes('kraken')
-                    );
-                    // Set the generatedKrakenRules state with the Kraken content from the rule condition
-                    if (krakenRule?.condition) {
-                        // Extract only the content between ```kraken and ``` delimiters
-                        // Regex pattern to match content between ```kraken and ``` delimiters
-                        // Handles both Windows (\r\n) and Unix (\n) line endings
-                        const krakenRegex = /```kraken[\r\n]+([\s\S]*?)```/g;
-                        const matches = krakenRule.condition.match(krakenRegex);
-                        
-                        if (matches) {
-                            // Extract the content between the delimiters and join if multiple matches
-                            const extractedContent = matches
-                                .map(match => {
-                                    // Remove the delimiters while preserving proper line endings
-                                    return match.replace(/```kraken[\r\n]+/, '').replace(/```$/, '');
-                                })
-                                .join('\n\n');
-                            setGeneratedKrakenRules(extractedContent);
-                        } else {
-                            // If no delimiters found, use the entire condition as fallback
-                            setGeneratedKrakenRules(krakenRule.condition);
-                        }
-                    }
-                }
-
-                setView('workflow');
-                setCurrentStep(3); // Jump to Enrichment/Review
-            }
-        } catch (error) {
-            console.error("Failed to load document", error);
-            alert("Failed to load document");
-        } finally {
-            setIsLoading(false);
-            setLoadingMessage('');
+          const docContent = await getDocumentContent(filename, latest.version);
+          setFullText(docContent.content);
+        } catch (e) {
+          console.error("Failed to load document content", e);
+          setFullText("Source text not available.");
         }
-    };
+
+        setCurrentFilename(filename);
+        setRules(loadedRules);
+        // We don't have datatypes stored separately in version history currently (it just stores rules).
+        // For now, we might lose datatypes if we reload. 
+        // TODO: Update backend to store datatypes or infer them.
+
+        // Determine if this is a Kraken document by checking if any rule has Kraken content (case-insensitive)
+        const isKrakenDoc = loadedRules.some(rule =>
+          rule.condition && rule.condition.toLowerCase().includes('kraken')
+        );
+        setIsKrakenMode(isKrakenDoc);
+
+        // If it's a Kraken document, extract the generated Kraken rules from the loaded rules
+        if (isKrakenDoc) {
+          // Find the first rule that contains Kraken content in its condition
+          const krakenRule = loadedRules.find(rule =>
+            rule.condition && rule.condition.toLowerCase().includes('kraken')
+          );
+          // Set the generatedKrakenRules state with the Kraken content from the rule condition
+          if (krakenRule?.condition) {
+            // Extract only the content between ```kraken and ``` delimiters
+            // Regex pattern to match content between ```kraken and ``` delimiters
+            // Handles both Windows (\r\n) and Unix (\n) line endings
+            const krakenRegex = /```kraken[\r\n]+([\s\S]*?)```/g;
+            const matches = krakenRule.condition.match(krakenRegex);
+
+            if (matches) {
+              // Extract the content between the delimiters and join if multiple matches
+              const extractedContent = matches
+                .map(match => {
+                  // Remove the delimiters while preserving proper line endings
+                  return match.replace(/```kraken[\r\n]+/, '').replace(/```$/, '');
+                })
+                .join('\n\n');
+              setGeneratedKrakenRules(extractedContent);
+            } else {
+              // If no delimiters found, use the entire condition as fallback
+              setGeneratedKrakenRules(krakenRule.condition);
+            }
+          }
+        }
+
+        setView('workflow');
+        setCurrentStep(3); // Jump to Enrichment/Review
+      }
+    } catch (error) {
+      console.error("Failed to load document", error);
+      alert("Failed to load document");
+    } finally {
+      setIsLoading(false);
+      setLoadingMessage('');
+    }
+  };
 
   const handleUploadComplete = async (data: any) => {
-        setIsLoading(true);
-        setLoadingMessage('Extracting candidate rules...');
-        try {
-            // Handle both object (from file upload) and string (from manual entry)
-            let extractedText = '';
-            let candidates = [];
-            
-            if (typeof data === 'string') {
-                extractedText = data;
-                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-                setCurrentFilename(`Manual_Entry_${timestamp}.txt`);
-                setTempPath(''); // No temp path for manual entry
-                
-                // Step 1 -> 2: Extract Candidates for manual entry
-                candidates = await extractCandidates(extractedText);
-            } else if (data.candidates) {
-                // Handle Kraken upload with pre-extracted candidates
-                extractedText = data.candidates.map((c: any) => c.summary).join('\n');
-                setCurrentFilename(data.filename);
-                setTempPath(data.temp_path);
-                
-                // Use pre-extracted candidates from Kraken upload
-                candidates = data.candidates.map((c: any) => ({
-                    ...c,
-                    selected: true // Default to selected
-                }));
-            } else {
-                // Handle regular upload
-                extractedText = data.extracted_text;
-                setCurrentFilename(data.filename);
-                setTempPath(data.temp_path);
-                
-                // Step 1 -> 2: Extract Candidates
-                candidates = await extractCandidates(extractedText);
-            }
+    setIsLoading(true);
+    setLoadingMessage('Extracting candidate rules...');
+    try {
+      // Handle both object (from file upload) and string (from manual entry)
+      let extractedText = '';
+      let candidates = [];
 
-            setFullText(extractedText);
-            setCandidates(candidates);
-            setCurrentStep(2);
-            
-            // Only save version automatically for non-Kraken documents at this stage
-            // Kraken documents will be saved after rules are generated in handleGenerateKrakenRules
-            if (!data.candidates) {
-                // Use the actual values that were just calculated, not the state variables which are asynchronous
-                const filenameToSave = typeof data === 'string' ? `Manual_Entry_${new Date().toISOString().replace(/[:.]/g, '-')}.txt` : data.filename;
-                const tempPathToSave = typeof data === 'string' ? '' : data.temp_path;
-                await saveVersion(filenameToSave, rules, tempPathToSave, extractedText, 'Initial upload');
-            }
-        } catch (error) {
-            console.error("Failed to extract candidates", error);
-            alert("Failed to extract rules");
-        } finally {
-            setIsLoading(false);
-            setLoadingMessage('');
-        }
-    };
+      if (typeof data === 'string') {
+        extractedText = data;
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        setCurrentFilename(`Manual_Entry_${timestamp}.txt`);
+        setTempPath(''); // No temp path for manual entry
+
+        // Step 1 -> 2: Extract Candidates for manual entry
+        candidates = await extractCandidates(extractedText);
+      } else if (data.candidates) {
+        // Handle Kraken upload with pre-extracted candidates
+        extractedText = data.candidates.map((c: any) => c.summary).join('\n');
+        setCurrentFilename(data.filename);
+        setTempPath(data.temp_path);
+
+        // Use pre-extracted candidates from Kraken upload
+        candidates = data.candidates.map((c: any) => ({
+          ...c,
+          selected: true // Default to selected
+        }));
+      } else {
+        // Handle regular upload
+        extractedText = data.extracted_text;
+        setCurrentFilename(data.filename);
+        setTempPath(data.temp_path);
+
+        // Step 1 -> 2: Extract Candidates
+        candidates = await extractCandidates(extractedText);
+      }
+
+      setFullText(extractedText);
+      setCandidates(candidates);
+      setCurrentStep(2);
+
+      // Only save version automatically for non-Kraken documents at this stage
+      // Kraken documents will be saved after rules are generated in handleGenerateKrakenRules
+      // if (!data.candidates) {
+      //     // Use the actual values that were just calculated, not the state variables which are asynchronous
+      //     const filenameToSave = typeof data === 'string' ? `Manual_Entry_${new Date().toISOString().replace(/[:.]/g, '-')}.txt` : data.filename;
+      //     const tempPathToSave = typeof data === 'string' ? '' : data.temp_path;
+      //     await saveVersion(filenameToSave, rules, tempPathToSave, extractedText, 'Initial upload');
+      // }
+    } catch (error) {
+      console.error("Failed to extract candidates", error);
+      alert("Failed to extract rules");
+    } finally {
+      setIsLoading(false);
+      setLoadingMessage('');
+    }
+  };
 
   const handleEnrich = async () => {
     setIsLoading(true);
@@ -240,57 +241,57 @@ export default function Home() {
   };
 
   const handleGenerate = async () => {
-        // For Kraken mode, we don't go to step 4, we stay on step 3 for download
-        if (!isKrakenMode) {
-            // Step 3 -> 4: Just proceed to download, NO auto-save
-            setCurrentStep(4);
-        }
-        // For Kraken mode, do nothing - we stay on step 3
-    };
+    // For Kraken mode, we don't go to step 4, we stay on step 3 for download
+    if (!isKrakenMode) {
+      // Step 3 -> 4: Just proceed to download, NO auto-save
+      setCurrentStep(4);
+    }
+    // For Kraken mode, do nothing - we stay on step 3
+  };
 
-    const handleGenerateKrakenRules = async () => {
-        setIsLoading(true);
-        setLoadingMessage('Generating Kraken Rules...');
-        try {
-            // Prepare the candidates data in the format expected by the API
-            const excelData = candidates.map(rule => ({
-                summary: rule.summary,
-                source_text: rule.source_text
-            }));
+  const handleGenerateKrakenRules = async () => {
+    setIsLoading(true);
+    setLoadingMessage('Generating Kraken Rules...');
+    try {
+      // Prepare the candidates data in the format expected by the API
+      const excelData = candidates.map(rule => ({
+        summary: rule.summary,
+        source_text: rule.source_text
+      }));
 
-            // Call the generateKrakenRules API
-            const result = await generateKrakenRules(excelData);
-            
-            // Store the generated rules
-            setGeneratedKrakenRules(result.generated_rules);
-            console.log('Generated Kraken Rules:', result.generated_rules);
-            
-            // Save version automatically for Kraken rules
-            // Convert candidates to rules format for version control
-            const krakenRules = candidates.map((candidate, index) => ({
-                id: candidate.id || `Rule-${index + 1}`,
-                name: candidate.name || `Rule-${index + 1}`,
-                summary: candidate.summary,
-                source_text: candidate.source_text,
-                // Store the generated Kraken rule in the condition field for version comparison
-                condition: result.generated_rules,
-                selected: true,
-                rule_type: 'SmartRules'
-            }));
-            // Save the generated Kraken rules as the text content for this version
-            // For Kraken rules, we don't need the tempPath since we're using the generated content directly
-            await saveVersion(currentFilename, krakenRules, undefined, result.generated_rules, 'Generated Kraken rules');
-            
-            // Step 2 -> 3: Proceed to the next step
-            setCurrentStep(3);
-        } catch (error) {
-            console.error("Failed to generate Kraken Rules", error);
-            alert("Failed to generate Kraken Rules");
-        } finally {
-            setIsLoading(false);
-            setLoadingMessage('');
-        }
-    };
+      // Call the generateKrakenRules API
+      const result = await generateKrakenRules(excelData);
+
+      // Store the generated rules
+      setGeneratedKrakenRules(result.generated_rules);
+      console.log('Generated Kraken Rules:', result.generated_rules);
+
+      // Save version automatically for Kraken rules
+      // Convert candidates to rules format for version control
+      const krakenRules = candidates.map((candidate, index) => ({
+        id: candidate.id || `Rule-${index + 1}`,
+        name: candidate.name || `Rule-${index + 1}`,
+        summary: candidate.summary,
+        source_text: candidate.source_text,
+        // Store the generated Kraken rule in the condition field for version comparison
+        condition: result.generated_rules,
+        selected: true,
+        rule_type: 'SmartRules'
+      }));
+      // Save the generated Kraken rules as the text content for this version
+      // For Kraken rules, we don't need the tempPath since we're using the generated content directly
+      await saveVersion(currentFilename, krakenRules, undefined, result.generated_rules, 'Generated Kraken rules');
+
+      // Step 2 -> 3: Proceed to the next step
+      setCurrentStep(3);
+    } catch (error) {
+      console.error("Failed to generate Kraken Rules", error);
+      alert("Failed to generate Kraken Rules");
+    } finally {
+      setIsLoading(false);
+      setLoadingMessage('');
+    }
+  };
 
   // --- Render ---
 
@@ -414,6 +415,7 @@ export default function Home() {
                 <DownloadComponent
                   selectedRules={rules.filter(r => r.selected)}
                   selectedDatatypes={datatypes}
+                  filename={currentFilename}
                 />
               </div>
               <button

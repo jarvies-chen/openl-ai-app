@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -17,8 +17,10 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 load_dotenv()
 
+# Trigger reload to force .env reload
 app = FastAPI(title="OpenL AI App Backend")
 
+# Reload trigger 3
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -296,7 +298,16 @@ async def enrich_rules(request: EnrichmentRequest):
              - **CRITICAL**: Use `&&` and `||` for logic.
              - **CRITICAL**: Use double quotes `"` for strings.
            - **Determine `rule_type`**: 'SmartRules' (field-to-constant) or 'DecisionTable' (variable-to-variable).
-        2. **Generate Datatypes**:
+        2. **Generate Datatypes (Strict Raw Data Only)**:
+           - **CRITICAL: NO BOOLEAN FLAGS**. 
+             - **FORBIDDEN**: Fields starting with `is`, `has`, `was`, `can`, `should` (e.g., `isEligible`, `hasCoverage`, `isTerminated`). 
+             - **REASON**: These are derived states, not raw facts. Use Strings (Status) or Dates instead.
+             - **Migration Examples**:
+               - **WRONG**: `Boolean isTerminated` -> **CORRECT**: `String employmentStatus` ("Active", "Terminated") or `Date terminationDate`.
+               - **WRONG**: `Boolean hasPriorCoverage` -> **CORRECT**: `Date priorCoverageEndDate`.
+               - **WRONG**: `Boolean isMinor` -> **CORRECT**: `Integer age` or `Date birthDate`.
+               - **WRONG**: `Boolean sameEmployer` -> **CORRECT**: `String employerId` (Logic: `old.employerId == new.employerId`).
+           - **CRITICAL**: Datatypes must represent the **Input Data Model** (What the user enters), not the Decision Model (What the system calculates).
            - **CRITICAL**: Group fields into logical Entities (e.g., `Policy`, `Member`, `Claim`).
            - **CRITICAL**: Infer `Integer` for numeric concepts.
            - Ensure ALL fields used in conditions are defined in Datatypes.
@@ -404,7 +415,7 @@ from openpyxl import Workbook
 from langchain_core.runnables import RunnablePassthrough
 
 @app.post("/generate-excel")
-async def generate_excel(request: GenerationRequest):
+async def generate_excel(request: GenerationRequest, background_tasks: BackgroundTasks):
     selected_rules = [r for r in request.rules if r.selected]
     if not selected_rules:
         return {"message": "No rules selected"}
@@ -856,15 +867,158 @@ async def generate_excel(request: GenerationRequest):
         if len(wb.sheetnames) > 1 and "Sheet" in wb.sheetnames:
             del wb["Sheet"]
         
-        # Save to temp file
-        filename = f"OpenL_Rules_{uuid.uuid4()}.xlsx"
-        save_path = os.path.join("generated", filename)
-        os.makedirs("generated", exist_ok=True)
-        wb.save(save_path)
-        
-        # Return the relative download URL
-        # Frontend will prepend the base URL
-        return {"status": "success", "download_url": f"/download/{filename}"}
+        # Determine clean filename common for both paths
+        clean_name = "OpenL_Rules.xlsx"
+        if request.original_filename:
+            import re
+            # Remove extension
+            base_name = os.path.splitext(request.original_filename)[0]
+            # Remove common date/time patterns (heuristic)
+            base_name = re.sub(r'[-_]\d{4}[-_]\d{2}[-_]\d{2}.*', '', base_name)
+            base_name = re.sub(r'[-_]\d{10,}.*', '', base_name)
+            clean_name = f"{base_name}.xlsx"
+
+        if request.create_pr:
+            import subprocess
+            import requests
+            from urllib.parse import quote_plus
+            
+            # Load Config from Env
+            TARGET_DIR = os.getenv("TARGET_DIR_RULES", r"E:\GENESIS\RND\openl-claim\DESIGN\rules\Openl AI Demo\rules")
+            REPO_DIR = os.getenv("REPO_DIR", r"E:\GENESIS\RND\openl-claim")
+            BRANCH = os.getenv("GIT_BRANCH", "openl-ai-demo")
+            TARGET_BRANCH = os.getenv("GIT_TARGET_BRANCH", "development")
+            
+            GIT_API_URL = os.getenv("GIT_API_URL", "https://gitlab.com/api/v4")
+            GIT_TOKEN = os.getenv("GIT_TOKEN", "")
+            GIT_PROJECT_ID = os.getenv("GIT_PROJECT_ID", "")
+            
+            # Ensure target directory exists
+            if not os.path.exists(TARGET_DIR):
+                os.makedirs(TARGET_DIR, exist_ok=True)
+                
+            save_path = os.path.join(TARGET_DIR, clean_name)
+            wb.save(save_path)
+            
+            # Git Operations
+            try:
+                # 1. Checkout Branch
+                subprocess.run(["git", "checkout", BRANCH], cwd=REPO_DIR, check=True, capture_output=True)
+                # 2. Pull latest
+                subprocess.run(["git", "pull", "origin", BRANCH], cwd=REPO_DIR, check=False, capture_output=True)
+                
+                # 3. Add ONLY the specific file
+                rel_path = os.path.relpath(save_path, REPO_DIR)
+                subprocess.run(["git", "add", rel_path], cwd=REPO_DIR, check=True, capture_output=True)
+                
+                # 4. Commit
+                subprocess.run(["git", "commit", "-m", f"Update OpenL rules: {clean_name}"], cwd=REPO_DIR, check=False, capture_output=True)
+                # 5. Push
+                subprocess.run(["git", "push", "origin", BRANCH], cwd=REPO_DIR, check=True, capture_output=True)
+                
+                mr_message = ""
+                mr_url = ""
+                
+                # 6. Automated Merge Request
+                if GIT_TOKEN:
+                    try:
+                        headers = {"PRIVATE-TOKEN": GIT_TOKEN}
+                        
+                        # Find Project ID if not configured
+                        project_id = GIT_PROJECT_ID
+                        if not project_id:
+                            # Try to get remote URL
+                            result = subprocess.run(["git", "remote", "get-url", "origin"], cwd=REPO_DIR, capture_output=True, text=True)
+                            remote_url = result.stdout.strip()
+                            
+                            path = ""
+                            if "git@" in remote_url:
+                                # SSH: git@host:group/project.git
+                                path = remote_url.split(":")[-1].replace(".git", "")
+                            else:
+                                # HTTP: https://host/path/to/gitlab/group/project.git
+                                from urllib.parse import urlparse
+                                parsed = urlparse(remote_url)
+                                path = parsed.path.replace(".git", "").lstrip("/")
+                                
+                                # Handle custom gitlab paths (e.g. /gitlab/group/project)
+                                # Heuristic: if path starts with 'gitlab/', remove it.
+                                # Check if it matches the pattern from the user's report
+                                if path.startswith("gitlab/"):
+                                    path = path[7:] # Remove 'gitlab/'
+                                
+                            # URL Encode path
+                            encoded_path = quote_plus(path)
+                            
+                            print(f"DEBUG: Remote URL: {remote_url}, Parsed Path: {path}, Encoded: {encoded_path}")
+                            
+                            # Get Project Info
+                            resp = requests.get(f"{GIT_API_URL}/projects/{encoded_path}", headers=headers)
+                            if resp.status_code == 200:
+                                project_id = resp.json().get("id")
+                            else:
+                                print(f"DEBUG: Failed to get project info. Status: {resp.status_code}, Resp: {resp.text}")
+                        
+                        if project_id:
+                            # Create MR
+                            payload = {
+                                "source_branch": BRANCH,
+                                "target_branch": TARGET_BRANCH,
+                                "title": f"Update OpenL Rules: {clean_name}",
+                                "description": f"Automated update from OpenL Assistant.\n\nFile: {clean_name}",
+                                "remove_source_branch": False
+                            }
+                            resp = requests.post(f"{GIT_API_URL}/projects/{project_id}/merge_requests", headers=headers, json=payload)
+                            
+                            if resp.status_code in [200, 201]:
+                                mr_data = resp.json()
+                                mr_url = mr_data.get("web_url")
+                                mr_message = f"Merge Request created successfully: {mr_url}"
+                            elif resp.status_code == 409:
+                                # MR might already exist, try to find it
+                                mr_message = "Merge Request already exists for this branch."
+                                # Try to fetch existing MRs
+                                resp = requests.get(f"{GIT_API_URL}/projects/{project_id}/merge_requests?state=opened&source_branch={BRANCH}", headers=headers)
+                                if resp.status_code == 200 and resp.json():
+                                    mr_url = resp.json()[0].get("web_url")
+                                    mr_message += f"\nExisting MR: {mr_url}"
+                            else:
+                                mr_message = f"Failed to create MR via API (Status {resp.status_code}): {resp.text}"
+                        else:
+                            mr_message = "Could not determine GitLab Project ID. Please configure GIT_PROJECT_ID in .env."
+
+                    except Exception as mr_e:
+                        print(f"MR Creation Error: {mr_e}")
+                        mr_message = f"Failed to automate Merge Request: {str(mr_e)}"
+                else:
+                    mr_message = "GIT_TOKEN not configured. Please create Merge Request manually."
+
+                final_message = f"File '{clean_name}' saved to {TARGET_DIR}.\nChanges pushed to branch '{BRANCH}'.\n\n{mr_message}"
+                
+                # Cleanup: Delete the file from local repo after push to keep it clean (as requested)
+                background_tasks.add_task(os.remove, save_path)
+                
+                return {
+                    "status": "success", 
+                    "message": final_message,
+                    "mr_url": mr_url
+                }
+            except subprocess.CalledProcessError as e:
+                error_msg = e.stderr.decode() if e.stderr else str(e)
+                print(f"Git Error: {error_msg}")
+                raise HTTPException(status_code=500, detail=f"Git Operation Failed: {error_msg}")
+
+        else:
+            # Save to temp file
+            # Use clean_name for consistency
+            filename = clean_name
+            save_path = os.path.join("generated", filename)
+            os.makedirs("generated", exist_ok=True)
+            wb.save(save_path)
+            
+            # Return the relative download URL
+            # Frontend will prepend the base URL
+            return {"status": "success", "download_url": f"/download/{filename}"}
         
     except Exception as e:
         import traceback
@@ -873,9 +1027,10 @@ async def generate_excel(request: GenerationRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/download/{filename}")
-async def download_file(filename: str):
+async def download_file(filename: str, background_tasks: BackgroundTasks):
     file_path = os.path.join("generated", filename)
     if os.path.exists(file_path):
+        background_tasks.add_task(os.remove, file_path)
         return FileResponse(file_path, filename=filename)
     raise HTTPException(status_code=404, detail="File not found")
         

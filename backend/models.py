@@ -29,6 +29,8 @@ class ExtractionResponse(BaseModel):
 class GenerationRequest(BaseModel):
     rules: List[Rule]
     datatypes: List[Datatype]
+    create_pr: bool = False
+    original_filename: Optional[str] = None
 
 class ExtractionRequest(BaseModel):
     text: str

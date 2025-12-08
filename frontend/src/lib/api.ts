@@ -49,6 +49,8 @@ export interface ExtractionResponse {
 export interface GenerationRequest {
   rules: Rule[];
   datatypes: Datatype[];
+  create_pr?: boolean;
+  original_filename?: string;
 }
 
 export const uploadDocument = async (file: File) => {
@@ -78,8 +80,8 @@ export const extractRules = async (text: string): Promise<ExtractionResponse> =>
   return response.data;
 };
 
-export const generateExcel = async (rules: Rule[], datatypes: Datatype[]) => {
-  const response = await api.post('/generate-excel', { rules, datatypes });
+export const generateExcel = async (rules: Rule[], datatypes: Datatype[], create_pr: boolean = false, original_filename?: string) => {
+  const response = await api.post('/generate-excel', { rules, datatypes, create_pr, original_filename });
   return response.data;
 };
 
