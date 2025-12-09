@@ -22,13 +22,28 @@ class Datatype(BaseModel):
     fields: List[DatatypeField]
     selected: bool = True
 
+class IntermediateVariable(BaseModel):
+    name: str
+    type: str
+    logic: str  # The formula/logic to calculate this variable
+    related_rules: List[str] = []
+
+class HelperRuleDefinition(BaseModel):
+    name: str
+    return_type: str
+    parameters: List[DatatypeField]
+    steps: List[dict] # Steps for Spreadsheet
+
 class ExtractionResponse(BaseModel):
     rules: List[Rule]
     datatypes: List[Datatype]
+    intermediate_variables: List[IntermediateVariable] = []
+    helper_rules: List[HelperRuleDefinition] = []
 
 class GenerationRequest(BaseModel):
     rules: List[Rule]
     datatypes: List[Datatype]
+    intermediate_variables: List[IntermediateVariable] = []
     create_pr: bool = False
     original_filename: Optional[str] = None
 
@@ -62,7 +77,7 @@ class SaveVersionRequest(BaseModel):
     comments: Optional[str] = None
 
 class EnrichmentRequest(BaseModel):
-    rules: List[CandidateRule]
+    rules: List[Rule]
     text: str # Original text context for enrichment
 
 class ExtractionRequest(BaseModel):

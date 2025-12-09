@@ -1,24 +1,53 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
 import shutil
 import os
 import io
 import uuid
+import logging
+import traceback
+import re
+from typing import List, Optional
+from urllib.parse import quote_plus, urlparse
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from langchain_ollama import OllamaLLM, OllamaEmbeddings
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
-from dotenv import load_dotenv
 from langchain_postgres import PGVector
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-load_dotenv()
+# Services
+from services.generation_service import GenerationService
+from services.git_service import GitService
+
+# Models
+from models import (
+    Rule, Datatype, DatatypeField, ExtractionResponse, GenerationRequest, 
+    ExtractionRequest, CandidateRule, EnrichmentRequest, CandidateList, 
+    SaveVersionRequest, KrakenRuleRequest, KrakenRuleResponse, KrakenDownloadRequest
+)
+
+# Utils (Importing strictly at top)
+from utils import parse_document, parse_excel
+from version_control import DocumentManager, RuleDiffer, VersionMetadata, DiffResult
+
+
+
+
 
 # Trigger reload to force .env reload
 app = FastAPI(title="OpenL AI App Backend")
+
+# Initialize Services
+gen_service = GenerationService()
+git_service = GitService()
 
 # Reload trigger 3
 app.add_middleware(
@@ -30,25 +59,18 @@ app.add_middleware(
 )
 
 # Models
-from models import Rule, Datatype, DatatypeField, ExtractionResponse, GenerationRequest, ExtractionRequest, CandidateRule, EnrichmentRequest, CandidateList, SaveVersionRequest, KrakenRuleRequest, KrakenRuleResponse, KrakenDownloadRequest
-
 # Initialize LLM
 ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-ollama_api_key = os.getenv("OLLAMA_API_KEY", "")
 llm_model = os.getenv("LLM_MODEL", "gpt-oss:20b")
 
 llm = OllamaLLM(
     base_url=ollama_base_url,
     model=llm_model,
-    # headers={"Authorization": f"Bearer {ollama_api_key}"} if ollama_api_key else None
 )
 
 @app.get("/")
 def read_root():
     return {"message": "OpenL AI App Backend is running"}
-
-from utils import parse_document
-from version_control import DocumentManager, RuleDiffer, VersionMetadata, DiffResult
 
 # Initialize DocumentManager
 doc_manager = DocumentManager()
@@ -58,6 +80,7 @@ async def upload_document(file: UploadFile = File(...)):
     file_location = f"temp_{file.filename}"
     with open(file_location, "wb+") as file_object:
         shutil.copyfileobj(file.file, file_object)
+
     
     try:
         text = parse_document(file_location)
@@ -80,7 +103,6 @@ async def kraken_upload(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="Only Excel files (.xlsx, .xls) are supported")
         
         # Parse Excel file
-        from utils import parse_excel
         excel_data = parse_excel(file_location)
         
         # Convert to candidate rules format
@@ -210,8 +232,8 @@ async def extract_rules(request: ExtractionRequest):
              - **CORRECT**: `Integer employmentDuration`
            - **CRITICAL**: Group fields into logical **Datatypes** (Entities).
              - **DO NOT** create a separate Datatype for every single field.
-             - **WRONG**: `Datatype Age { age }`, `Datatype Income { income }`
-             - **CORRECT**: `Datatype Person { age, income, gender }`
+             - **WRONG**: `Datatype Age {{ age }}`, `Datatype Income {{ income }}`
+             - **CORRECT**: `Datatype Person {{ age, income, gender }}`
              - **Common Groups**:
                - `Policy`: effectiveDate, expirationDate, type, status
                - `Member`: age, gender, employmentStatus, salary
@@ -278,73 +300,11 @@ async def extract_candidates(request: ExtractionRequest):
 
 @app.post("/enrich-rules", response_model=ExtractionResponse)
 async def enrich_rules(request: EnrichmentRequest):
-    parser = JsonOutputParser(pydantic_object=ExtractionResponse)
-    prompt = PromptTemplate(
-        template="""Act as an OpenL Tablets Expert. You are given a list of "Candidate Rules" (plain English) and the original policy text.
-        
-        **Goal**: Convert these candidate rules into fully structured OpenL Rules with technical "Conditions" and "Datatypes".
-
-        **Input Rules**:
-        {rules}
-
-        **Context Text**:
-        {text}
-
-        **Instructions**:
-        1. For each Candidate Rule:
-           - Keep the Name and Summary.
-           - **Generate the `condition`**: A simplified pseudo-code representation.
-             - **CRITICAL**: Decompose complex conditions into atomic fields.
-             - **CRITICAL**: Use `&&` and `||` for logic.
-             - **CRITICAL**: Use double quotes `"` for strings.
-           - **Determine `rule_type`**: 'SmartRules' (field-to-constant) or 'DecisionTable' (variable-to-variable).
-        2. **Generate Datatypes (Strict Raw Data Only)**:
-           - **CRITICAL: NO BOOLEAN FLAGS**. 
-             - **FORBIDDEN**: Fields starting with `is`, `has`, `was`, `can`, `should` (e.g., `isEligible`, `hasCoverage`, `isTerminated`). 
-             - **REASON**: These are derived states, not raw facts. Use Strings (Status) or Dates instead.
-             - **Migration Examples**:
-               - **WRONG**: `Boolean isTerminated` -> **CORRECT**: `String employmentStatus` ("Active", "Terminated") or `Date terminationDate`.
-               - **WRONG**: `Boolean hasPriorCoverage` -> **CORRECT**: `Date priorCoverageEndDate`.
-               - **WRONG**: `Boolean isMinor` -> **CORRECT**: `Integer age` or `Date birthDate`.
-               - **WRONG**: `Boolean sameEmployer` -> **CORRECT**: `String employerId` (Logic: `old.employerId == new.employerId`).
-           - **CRITICAL**: Datatypes must represent the **Input Data Model** (What the user enters), not the Decision Model (What the system calculates).
-           - **CRITICAL**: Group fields into logical Entities (e.g., `Policy`, `Member`, `Claim`).
-           - **CRITICAL**: Infer `Integer` for numeric concepts.
-           - Ensure ALL fields used in conditions are defined in Datatypes.
-
-        {format_instructions}
-        """,
-        input_variables=["rules", "text"],
-        partial_variables={"format_instructions": parser.get_format_instructions()},
-    )
-    chain = prompt | llm | parser
     try:
-        # Convert rules to dict for prompt
-        rules_dict = [r.dict() for r in request.rules]
-        result = chain.invoke({"rules": rules_dict, "text": request.text})
-        
-        # Ensure lists
-        if 'rules' not in result: result['rules'] = []
-        if 'datatypes' not in result: result['datatypes'] = []
-        
-        # Map back IDs from input rules to output rules
-        # We assume the LLM maintains the order of rules.
-        # If counts mismatch, we try our best or just leave as is.
-        input_rules = request.rules
-        output_rules = result.get('rules', [])
-        
-        if len(input_rules) == len(output_rules):
-            for in_r, out_r in zip(input_rules, output_rules):
-                out_r['id'] = in_r.id
-        else:
-            # Fallback: Try to match by Name if possible, or just re-assign sequential IDs
-            # But for now, let's just ensure they have IDs
-            for i, r in enumerate(output_rules, 1):
-                if 'id' not in r:
-                    r['id'] = f"Rule-{i:02d}"
-        
-        return result
+        # Delegate to GenerationService (The Architect)
+        return await gen_service.enrich_rules(request.rules, request.text)
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/generate-kraken-rules", response_model=KrakenRuleResponse)
@@ -411,619 +371,49 @@ async def delete_document(filename: str):
 
 
 
-from openpyxl import Workbook
-from langchain_core.runnables import RunnablePassthrough
-
 @app.post("/generate-excel")
 async def generate_excel(request: GenerationRequest, background_tasks: BackgroundTasks):
     selected_rules = [r for r in request.rules if r.selected]
     if not selected_rules:
         return {"message": "No rules selected"}
     
-    # 1.5 Pre-process rules to enforce Decision Table for complex conditions
-    import re
-    for rule in selected_rules:
-        # Heuristic: If condition contains comparison between two variables (dot notation on both sides)
-        # e.g. "policy.effectiveDate < member.hireDate"
-        # Regex: word.word ... operator ... word.word
-        # Also check for "Date" keyword or specific date logic if needed
-        
-        condition = rule.condition or ""
-        
-        # Check for Variable vs Variable comparison
-        # Pattern:  word.word  (space/op)  word.word
-        # We look for two occurrences of dot-notation separated by an operator
-        if re.search(r'[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+\s*[<>=!]+\s*[a-zA-Z0-9_]+\.[a-zA-Z0-9_]+', condition):
-            print(f"Forcing DecisionTable for rule '{rule.name}' due to Variable comparison: {condition}")
-            rule.rule_type = 'DecisionTable'
-            
-        # Check for Date vs Date (often implies variable comparison even if not caught above)
-        if "Date" in condition or "date" in condition.lower():
-             # If it has an operator and isn't just a simple check
-             if re.search(r'[<>=!]', condition):
-                 # If right side is NOT a simple number or quoted string, assume it's a variable/expression
-                 # This is a bit aggressive, but safer for OpenL
-                 right_side = re.split(r'[<>=!]+', condition)[-1].strip()
-                 if not re.match(r'^[\d"\']', right_side) and right_side.lower() != 'true' and right_side.lower() != 'false':
-                     print(f"Forcing DecisionTable for rule '{rule.name}' due to Date logic: {condition}")
-                     rule.rule_type = 'DecisionTable'
-
-    # 1. Retrieve OpenL syntax guides from RAG
-    vector_store = get_vector_store()
-    # Increase k to get more context and use MMR for diversity
-    retriever = vector_store.as_retriever(
-        search_type="mmr",
-        search_kwargs={"k": 10, "fetch_k": 20}
-    )
-    
-    # We query for general OpenL Table syntax and specific rule types
-    context_docs = retriever.invoke("OpenL Tablets syntax for Datatype Table, SmartRules, Decision Table, and Spreadsheet structure")
-    context_text = "\n\n".join([doc.page_content for doc in context_docs])
-    
-    # 2. Generate Excel Structure using LLM
-    # We ask the LLM to output a logical structure of Tables
-    
-    class OpenLTable(BaseModel):
-        header: str
-        rows: List[List[str]] # List of rows, where each row is a list of cell values
-
-    class ExcelSheet(BaseModel):
-        name: str
-        tables: List[OpenLTable]
-
-    class ExcelStructure(BaseModel):
-        sheets: List[ExcelSheet]
-
-    parser = JsonOutputParser(pydantic_object=ExcelStructure)
-    
-    # Debug: Print RAG context
     try:
-        print(f"RAG Context: {context_text.encode('utf-8', errors='ignore').decode('utf-8')}")
-    except:
-        print("RAG Context: (Error printing context)")
-
-    prompt = PromptTemplate(
-        template="""You are an OpenL Tablets expert. Generate the logical structure for an OpenL Excel file based on the following business rules and datatypes.
+        # 1. Generate Structure using 3-Layer Pipeline
+        structure = await gen_service.generate_excel_structure(request)
         
-        Business Rules:
-        {rules}
-
-        Datatypes:
-        {datatypes}
+        # 2. Create Workbook
+        wb = gen_service.create_workbook(structure)
         
-        OpenL Syntax Guide (Context):
-        {context}
-        
-        Output a JSON object describing the Excel sheets and their tables.
-        
-        **CRITICAL**: You MUST generate BOTH sheets:
-        1. A "Vocabulary" sheet with all Datatypes
-        2. A "Rules" sheet with all the business rules (SmartRules or Decision Tables)
-        
-        Do NOT skip the Rules sheet. Every business rule provided must be converted into either a SmartRule or Decision Table.
-        
-        **CRITICAL**: You MUST respect the 'Type' specified for each rule in the input list.
-        - The input list has already been pre-processed to force 'DecisionTable' for complex rules.
-        - **TRUST THE INPUT TYPE**. If it says 'DecisionTable', generate a Decision Table.
-        
-        **CRITICAL**: If a rule is marked as 'SmartRules' but involves comparing two variables (e.g., `employee.hours < employee.maxHours`), you MUST generate a **Decision Table** instead.
-          - **Detection**: Check the **VALUE** side of the comparison (the part after the operator).
-            - **Is it a Variable?** Does it contain a dot `.` (e.g. `e.normalWorkWeek`, `coverage.effectiveDate`)? -> **DECISION TABLE**.
-            - **Is it a Math Expression?** Does it contain `+`, `-`, `*`, `/` with a variable? -> **DECISION TABLE**.
-            - **Is it `currentDate`?** -> **DECISION TABLE**.
-            - **Is it `DateOfService`?** -> **DECISION TABLE**.
-            - **Is it a Constant?** (Raw Number `5`, Quoted String `"Active"`, Boolean `true`) -> **SMARTRULES**.
-          - **Action**: If ANY variable logic is found on the value side, you MUST generate a **Decision Table**.
-          - **CRITICAL**: You must decide the rule type **BEFORE** generating the JSON object.
-            - **NEVER** output a SmartRules header and then switch to a Decision Table header inside the same object.
-            - **NEVER** output correction text or comments inside the JSON structure.
-          - **Decision Table Structure for this case**:
-            - Header: `Rules Boolean RuleName(Employee e, Date currentDate)`
-            - Row 1: `C1`, `RET1`
-            - Row 2: `e.terminationDate <= currentDate + 4`, `result`  (Put the FULL comparison in the expression)
-            - Row 3: `Boolean isWithinLimit`, `Boolean result`
-            - Row 4: `true`, `true`
-            - Row 5: ``, `false`
-          - **CRITICAL**: SmartRules ONLY support comparing a field against a **CONSTANT**.
-            - **WRONG**: SmartRule with value `< e.normalWorkWeek` (Variable)
-            - **WRONG**: SmartRule with value `>= DateOfService` (Variable) -> This results in empty cells like `>=`!
-            - **WRONG**: SmartRule with value `>= coverage.effectiveDate` (Variable)
-            - **CORRECT**: Decision Table with condition `e.workSchedule < e.normalWorkWeek`
-        - If a rule is marked as 'SmartRules' and uses constants:
-          - **SmartRules Structure**:
-            - Header: `SmartRules <ReturnType> <RuleName>(<Params>)`
-            - Row 1: **Column Headers** (Field Paths ONLY).
-              - **CRITICAL**: This must be a **SINGLE ROW** containing **ALL** the field paths and the Result column.
-              - **CRITICAL**: Do NOT list fields vertically (one per row).
-                - **WRONG**: 
-                  ```json
-                  [
-                    ["e.age"], 
-                    ["e.isActive"], 
-                    ["Result"]
-                  ]
-                  ```
-                - **CORRECT**: 
-                  ```json
-                  [
-                    ["e.age", "e.isActive", "Result"]
-                  ]
-                  ```
-              - **CRITICAL**: This row must contain ONLY the variable/field path (e.g., `employee.age`, `policy.type`, `claim.amount`).
-              - **CRITICAL**: Do NOT include operators or values in this row (e.g., `> 18`, `== "Active"`).
-              - **WRONG**: `employee.age > 18`
-              - **CORRECT**: `employee.age`
-              - **CRITICAL**: The LAST column MUST be `Result`.
-            - Row 2+: **Values**.
-              - Place the operator and value here (e.g., `> 18`, `"Active"`, `true`).
-              - **CRITICAL**: The LAST column MUST contain the return value (e.g., `true`, `false`, `"Eligible"`).
-                - **WRONG**: `["> 18", "true"]` (Missing return value)
-                - **CORRECT**: `["> 18", "true", "true"]` (Includes return value)
-              - **CRITICAL**: ALWAYS add a final "Otherwise" row at the bottom.
-                - This row should have EMPTY strings `""` for all conditions (meaning "Any").
-                - It should return the default value (e.g., `false` for boolean rules).
-                - Example: `["", "", "false"]`
-              - **CRITICAL**: For Numeric/Date fields, use ONLY the number/date. STRIP ALL UNITS.
-                - **WRONG**: `<= 4 Weeks`, `> 18 Years`, `4 Weeks`
-                - **CORRECT**: `<= 4`, `> 18`, `4`
-              - **CRITICAL**: Comparison operators (>=, <=, >, <) are ONLY for Numbers and Dates.
-                - NEVER use them with Strings that contain units.
-              - Row 2+ MUST be the lists of values corresponding to those fields.
-        - If a rule is marked as 'DecisionTable', you MUST generate a Decision Table.
-        
-        Requirements:
-           - **Structure**:
-             - **Header**: `Datatype <Name>` (e.g., `Datatype Driver`)
-             - **Rows**: List of `[Type, FieldName]` pairs.
-               - **CRITICAL**: This is a VERTICAL table with 2 columns.
-               - **Column 1**: The Type (e.g., `String`, `Integer`, `Date`, `Boolean`).
-               - **Column 2**: The Field Name (camelCase).
-               - **CRITICAL**: You MUST put the **Type** in the first column and the **Name** in the second column.
-                 - **WRONG**: `["age", "Integer"]` (Name first)
-                 - **CORRECT**: `["Integer", "age"]` (Type first)
-               - **CRITICAL**: Do NOT include a header row inside the table (e.g., do NOT add `["Type", "Name"]` or `["Field", "Type"]`). Start directly with the first field definition.
-               - **CRITICAL**: Do NOT put multiple fields in one row. Each field gets its own row.
-               - **JSON Structure Example for Datatype**:
-                 ```json
-                 {{
-                   "header": "Datatype Driver",
-                   "rows": [
-                     ["String", "name"],
-                     ["Integer", "age"],
-                     ["Date", "licenseDate"],
-                     ["Boolean", "isActive"]
-                   ]
-                 }}
-                 ```
-               - **BAD Example (DO NOT DO THIS)**:
-                 ```json
-                 {{
-                   "header": "Datatype Driver",
-                   "rows": [
-                     ["Field", "Type"],  // WRONG: Internal header
-                     ["name", "String"], // WRONG: Swapped columns
-                     ["age", "Integer"]  // WRONG: Swapped columns
-                   ]
-                 }}
-                 ```
-                 - **CRITICAL**: For string literals in expressions, ALWAYS use **DOUBLE QUOTES**.
-                   - **CORRECT**: `member.roleName == "Employee"`, `status == "Active"`
-                   - **WRONG**: `member.roleName == 'Employee'`, `status == 'Active'`
-                   - **WRONG**: `e.employmentStatus == 'Terminated'`
-                   - **CORRECT**: `e.employmentStatus == "Terminated"`
-                   - This applies to ALL string comparisons in Row 2 expressions and Row 4+ values.
-                        - **WRONG**: `p.effectiveDate <= Today()`
-                        - **WRONG**: `p.effectiveDate <= Today()`
-                        - **WRONG**: `p.effectiveDate <= Now()`
-                  - **CRITICAL**: **Consistency Check**:
-                    - You MUST ensure that EVERY field used in a rule expression is defined in the corresponding Datatype.
-                    - If a rule uses `e.isEligibleForDisabilityBenefits`, you MUST add `Boolean isEligibleForDisabilityBenefits` to the `EmploymentDetails` Datatype.
-                    - **Do not leave undefined fields.** If you invent a field name for a rule, you MUST add it to the Vocabulary.
-                 - **CRITICAL**: NEVER compare a `Date` field with a `Number`.
-                   - **WRONG**: `policy.expirationDate > 0`
-                   - **WRONG**: `employee.terminationDate <= 30`
-                   - **CORRECT STRATEGY**: If checking a duration (e.g. "within 30 days"), you MUST:
-                     1. Define an `Integer` field in the Datatype for the duration (e.g. `daysSinceTermination`).
-                     2. Use that `Integer` field in the SmartRule column.
-                     3. Compare that `Integer` with the number.
-                     - Example: Column `e.daysSinceTermination`, Value `<= 30`.
-                 - **CRITICAL**: STRIP UNITS from expressions.
-                   - **WRONG**: `employee.timeSinceTermination <= 4 weeks`
-                   - **CORRECT**: `employee.timeSinceTermination <= 4` (assuming integer represents weeks)
-                   - **WRONG**: `age > 18 years`
-                   - **CORRECT**: `age > 18`
-                   - Ensure the comparison is always `Variable Operator Number` (e.g., `x > 5`), never `Variable Operator Number Unit`.
-                 - **CRITICAL**: For custom helper functions (e.g., `isInCosmeticServices()`), you MUST create a Spreadsheet table to define them.
-               - Return: 
-                 - **CRITICAL**: This must be the **Parameter Name** defined in Row 3 (e.g., `result`), NOT a value like "Approved".
-                 - For **Complex Return** (object): Use constructor (e.g., `= new CalculationStatus(flag, code)`).
-             - **Row 3 (Parameter Definitions)**: **CRITICAL**: Define the local variable type and name for EVERY COLUMN, including RET1.
-               - This is NOT the function parameter - it's a local variable to hold the result of the expression in Row 2.
-               - **CRITICAL**: The content MUST be in the format `Type variableName` (e.g., `Boolean isLate`).
-               - **CRITICAL**: Do NOT put a description here. Descriptions are NOT allowed in this table structure.
-               - **CRITICAL**: Even for complex expressions (e.g., `isInOrthodonticServices(...)`), Row 3 MUST be a variable definition, NOT a description.
-                 - **WRONG**: `CDT code is orthodontic` (This is a description)
-                 - **CORRECT**: `Boolean isOrthodontic`
-                 - **WRONG**: `Date of Service after waiting period` (This is a description)
-                 - **CORRECT**: `Boolean isAfterWait`
-               - **CRITICAL**: If the content has more than 2 words, it is likely a description and is WRONG. (e.g., "Date of Service within..." is WRONG).
-               - **CRITICAL**: You MUST define a parameter for the RET1 column (e.g., `String result`, `Boolean isValid`).
-                 - **WRONG**: `Result` (Missing type), `Approved` (Value not parameter).
-                 - **CORRECT**: `String result`.
-               - **CRITICAL**: Parameter names MUST start with lowercase (e.g., `isValid`, NOT `IsValid`).
-               - **CORRECT**: `Boolean isAfterPaid`, `Boolean isWithinGrace`, `String result`.
-               - **WRONG**: `Claim claim`, `Policy policy`, `Boolean IsAfterPaid`, `Date of Service after late entrant wait period` (Description is WRONG here), or leaving RET1 empty.
-             - **Row 4+ (Values)**: The specific values to check or return.
-               - **CRITICAL**: There is NO "Description" row. Row 4 is immediately the first row of values.
-               - **CRITICAL**: You MUST generate at least one row of values (Row 4). Do not stop after Row 3.
-               - **CRITICAL**: NEVER output a table with only 3 rows. It MUST have at least 4 rows (Header, Expressions, Variables, Values).
-               - **CRITICAL**: If the rule logic implies a boolean condition (e.g., "If A and B then True"), you MUST generate the Truth Table rows covering the "True" case.
-                 - If specific values are not mentioned, generate the "Happy Path" row where the result is True.
-                 - **CRITICAL**: If the rule logic implies a boolean condition (e.g., "If A and B then True"), you MUST generate the Truth Table rows covering the "True" case.
-                 - If specific values are not mentioned, generate the "Happy Path" row where the result is True.
-                 - Example: `["true", "true", "true"]`
-               - **CRITICAL**: ALWAYS add a final "Otherwise" row at the bottom.
-                 - This row should have EMPTY strings `""` for all conditions (meaning "Any").
-                 - It should return the default value (e.g., `false` for boolean rules).
-               - **CRITICAL**: String values must be quoted (e.g., `"Approved"`, `"Denied"`).
-           - **Example (Splitting AND Conditions)**:
-             - Rule: `Member.recordExists && (DateOfService >= Member.hireDate)`
-             - Header: `Rules String CheckEligibility(Member m, Date dos)`
-             - Row 1: `["C1", "C2", "RET1"]`
-             - Row 2: `["m.recordExists", "dos >= m.hireDate", "result"]`
-             - Row 3: `["Boolean exists", "Boolean isEligible", "String result"]`
-             - Row 4: `["true", "true", "\\"Approved\\""]`
-             - Row 5: `["", "", "\\"Denied\\""]` // Otherwise row
-             
-           - **CRITICAL**: Operators MUST be Java/C style.
-             - **WRONG**: `AND`, `OR`
-             - **CORRECT**: `&&`, `||`
-           - **CRITICAL**: Split complex conditions into separate columns.
-             - **WRONG**: `C1: condition1 && condition2` (Single column)
-             - **CORRECT**: `C1: condition1`, `C2: condition2` (Two columns)
-        
-        3. **Spreadsheet Tables (Helper Functions)**:
-           - **CRITICAL**: If you need custom helper functions (e.g., `isInCosmeticServices()`, `contains()`), create Spreadsheet tables to define them.
-           - Place Spreadsheet tables in the **Rules** sheet, BEFORE the Decision Tables that use them.
-           - **Header**: `Spreadsheet <ReturnType> <FunctionName>(<Params>)`
-           - **Structure**:
-             - **Row 1**: Column headers (e.g., `Step`, `Name`, `Value`)
-             - **Row 2+**: Steps defining the function logic
-           - **Example (Helper Function)**:
-             - Function: `isInCosmeticServices(String cdtCode)`
-             - Header: `Spreadsheet Boolean isInCosmeticServices(String cdtCode)`
-             - Row 1: `["Step", "Name", "Value"]`
-             - Row 2: `["1", "cosmeticCodes", "Arrays.asList(\\"D9970\\", \\"D9971\\", \\"D9972\\")"]`
-             - Row 3: `["2", "result", "cosmeticCodes.contains(cdtCode)"]`
-             - Row 4: `["3", "return", "result"]`
-        
-        {format_instructions}
-        """,
-        input_variables=["rules", "datatypes", "context"],
-        partial_variables={"format_instructions": parser.get_format_instructions()},
-    )
-    
-    # chain = prompt | llm | parser
-    chain_raw = prompt | llm
-    
-    rules_text = "\n".join([f"- Name: {r.name}, Summary: {r.summary}, Type: {r.rule_type} (Condition: {r.condition}, Result: {r.result})" for r in selected_rules])
-    datatypes_text = "\n".join([f"- {d.name}: {[f.name for f in d.fields]}" for d in request.datatypes if d.selected])
-    
-    try:
-        print(f"Generating Excel with rules: {rules_text}")
-        # Get raw string response first
-        raw_response = chain_raw.invoke({
-            "rules": rules_text, 
-            "datatypes": datatypes_text,
-            "context": context_text
-        })
-        
-        # Print first 500 chars for debugging
-        print(f"Raw LLM Response (first 500 chars): {raw_response[:500]}")
-        print(f"Raw LLM Response (last 100 chars): {raw_response[-100:]}")
-        
-        if not raw_response:
-             raise ValueError("LLM returned empty string.")
-
-        import re
-        import json
-        # Clean the response to ensure it's valid JSON
-        json_match = re.search(r'\{.*\}', raw_response, re.DOTALL)
-        if json_match:
-            raw_response = json_match.group(0)
-        
-        # Parse the raw response
-        structure_data = None
-        parse_error = None
-        
-        # Try 1: Use the Pydantic parser
-        try:
-            structure_data = parser.parse(raw_response)
-        except Exception as e:
-            parse_error = e
-            print(f"Pydantic Parse Error: {e}")
-        
-        # Try 2: Use json.loads as fallback
-        if not structure_data:
-            try:
-                json_data = json.loads(raw_response)
-                structure_data = json_data
-                print("Successfully parsed with json.loads")
-            except Exception as e:
-                print(f"json.loads Parse Error: {e}")
-        
-        # Try 3: Heuristic repair
-        if not structure_data:
-            print("Parser returned None or failed, attempting heuristic repair...")
-            cleaned_response = raw_response.strip()
-            success = False
-            
-            # Try removing trailing characters one by one
-            for i in range(5):
-                if not cleaned_response: break
-                cleaned_response = cleaned_response[:-1]
-                
-                try:
-                    json_data = json.loads(cleaned_response)
-                    structure_data = json_data
-                    success = True
-                    print(f"Successfully parsed JSON after removing {i+1} trailing char(s)")
-                    break
-                except:
-                    continue
-            
-            if not success:
-                print(f"FULL Raw Response for debugging:\n{raw_response}")
-                raise ValueError(f"Failed to parse JSON after all retries. Original error: {parse_error}")
-        
-        print(f"LLM Response Structure: {structure_data}")
-        
-        if not structure_data:
-            raise ValueError("Failed to generate Excel structure: LLM returned empty response.")
-
-        # 3. Create Excel File
-        wb = Workbook()
-        # Keep default "Sheet" for now, remove it later if we add new sheets
-        
-        # Normalize the structure to handle case variations and different formats
-        def normalize_dict(d):
-            """Convert all keys to lowercase"""
-            if isinstance(d, dict):
-                return {k.lower(): normalize_dict(v) for k, v in d.items()}
-            elif isinstance(d, list):
-                return [normalize_dict(item) for item in d]
-            else:
-                return d
-        
-        structure_data = normalize_dict(structure_data)
-            
-        # Handle case where structure_data might be a list (if LLM ignored the root object)
-        sheets_data = structure_data.get('sheets', []) if isinstance(structure_data, dict) else []
-        
-        # Handle alternative format where LLM returns {Vocabulary: {...}, Rules: {...}}
-        if not sheets_data and isinstance(structure_data, dict):
-            # Check if the structure has 'vocabulary' and 'rules' as top-level keys
-            if 'vocabulary' in structure_data or 'rules' in structure_data:
-                sheets_data = []
-                if 'vocabulary' in structure_data:
-                    vocab_data = structure_data['vocabulary']
-                    sheets_data.append({
-                        'name': vocab_data.get('name', 'Vocabulary'),
-                        'tables': vocab_data.get('tables', [])
-                    })
-                if 'rules' in structure_data:
-                    rules_data = structure_data['rules']
-                    sheets_data.append({
-                        'name': rules_data.get('name', 'Rules'),
-                        'tables': rules_data.get('tables', [])
-                    })
-        
-        if not sheets_data and isinstance(structure_data, list):
-             sheets_data = structure_data
-
-        for sheet_data in sheets_data:
-            # Parse sheet data
-            name = sheet_data.get('name', 'Sheet') if isinstance(sheet_data, dict) else getattr(sheet_data, 'name', 'Sheet')
-            tables = sheet_data.get('tables', []) if isinstance(sheet_data, dict) else getattr(sheet_data, 'tables', [])
-            
-            ws = wb.create_sheet(name)
-            current_row = 1
-            
-            for table in tables:
-                # Parse table data
-                header = table.get('header', '') if isinstance(table, dict) else getattr(table, 'header', '')
-                rows = table.get('rows', []) if isinstance(table, dict) else getattr(table, 'rows', [])
-                
-                if not header and not rows:
-                    continue
-
-                # Calculate width for merging header
-                # Width is max of row length, or 1 if empty
-                width = 1
-                if rows:
-                    width = max([len(r) for r in rows]) if rows else 1
-                
-                # Write Header
-                c = ws.cell(row=current_row, column=1, value=header)
-                if width > 1:
-                    ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=width)
-                
-                # Apply header style (optional, but good for OpenL)
-                # c.font = Font(bold=True, color="FFFFFF")
-                # c.fill = PatternFill(start_color="000000", end_color="000000", fill_type="solid")
-
-                current_row += 1
-                
-                # Write Rows
-                for row_data in rows:
-                    for col_idx, cell_value in enumerate(row_data):
-                        ws.cell(row=current_row, column=col_idx + 1, value=cell_value)
-                    current_row += 1
-                
-                # Add spacing between tables (2 empty rows)
-                current_row += 2
-        
-        # Remove default "Sheet" if we created other sheets
-        if len(wb.sheetnames) > 1 and "Sheet" in wb.sheetnames:
-            del wb["Sheet"]
-        
-        # Determine clean filename common for both paths
+        # 3. Handle File Saving / Git
+        # Determine clean filename
         clean_name = "OpenL_Rules.xlsx"
         if request.original_filename:
-            import re
-            # Remove extension
             base_name = os.path.splitext(request.original_filename)[0]
-            # Remove common date/time patterns (heuristic)
             base_name = re.sub(r'[-_]\d{4}[-_]\d{2}[-_]\d{2}.*', '', base_name)
             base_name = re.sub(r'[-_]\d{10,}.*', '', base_name)
             clean_name = f"{base_name}.xlsx"
-
-        if request.create_pr:
-            import subprocess
-            import requests
-            from urllib.parse import quote_plus
             
-            # Load Config from Env
-            TARGET_DIR = os.getenv("TARGET_DIR_RULES", r"E:\GENESIS\RND\openl-claim\DESIGN\rules\Openl AI Demo\rules")
-            REPO_DIR = os.getenv("REPO_DIR", r"E:\GENESIS\RND\openl-claim")
-            BRANCH = os.getenv("GIT_BRANCH", "openl-ai-demo")
-            TARGET_BRANCH = os.getenv("GIT_TARGET_BRANCH", "development")
-            
-            GIT_API_URL = os.getenv("GIT_API_URL", "https://gitlab.com/api/v4")
-            GIT_TOKEN = os.getenv("GIT_TOKEN", "")
-            GIT_PROJECT_ID = os.getenv("GIT_PROJECT_ID", "")
-            
-            # Ensure target directory exists
-            if not os.path.exists(TARGET_DIR):
-                os.makedirs(TARGET_DIR, exist_ok=True)
-                
-            save_path = os.path.join(TARGET_DIR, clean_name)
-            wb.save(save_path)
-            
-            # Git Operations
-            try:
-                # 1. Checkout Branch
-                subprocess.run(["git", "checkout", BRANCH], cwd=REPO_DIR, check=True, capture_output=True)
-                # 2. Pull latest
-                subprocess.run(["git", "pull", "origin", BRANCH], cwd=REPO_DIR, check=False, capture_output=True)
-                
-                # 3. Add ONLY the specific file
-                rel_path = os.path.relpath(save_path, REPO_DIR)
-                subprocess.run(["git", "add", rel_path], cwd=REPO_DIR, check=True, capture_output=True)
-                
-                # 4. Commit
-                subprocess.run(["git", "commit", "-m", f"Update OpenL rules: {clean_name}"], cwd=REPO_DIR, check=False, capture_output=True)
-                # 5. Push
-                subprocess.run(["git", "push", "origin", BRANCH], cwd=REPO_DIR, check=True, capture_output=True)
-                
-                mr_message = ""
-                mr_url = ""
-                
-                # 6. Automated Merge Request
-                if GIT_TOKEN:
-                    try:
-                        headers = {"PRIVATE-TOKEN": GIT_TOKEN}
-                        
-                        # Find Project ID if not configured
-                        project_id = GIT_PROJECT_ID
-                        if not project_id:
-                            # Try to get remote URL
-                            result = subprocess.run(["git", "remote", "get-url", "origin"], cwd=REPO_DIR, capture_output=True, text=True)
-                            remote_url = result.stdout.strip()
-                            
-                            path = ""
-                            if "git@" in remote_url:
-                                # SSH: git@host:group/project.git
-                                path = remote_url.split(":")[-1].replace(".git", "")
-                            else:
-                                # HTTP: https://host/path/to/gitlab/group/project.git
-                                from urllib.parse import urlparse
-                                parsed = urlparse(remote_url)
-                                path = parsed.path.replace(".git", "").lstrip("/")
-                                
-                                # Handle custom gitlab paths (e.g. /gitlab/group/project)
-                                # Heuristic: if path starts with 'gitlab/', remove it.
-                                # Check if it matches the pattern from the user's report
-                                if path.startswith("gitlab/"):
-                                    path = path[7:] # Remove 'gitlab/'
-                                
-                            # URL Encode path
-                            encoded_path = quote_plus(path)
-                            
-                            print(f"DEBUG: Remote URL: {remote_url}, Parsed Path: {path}, Encoded: {encoded_path}")
-                            
-                            # Get Project Info
-                            resp = requests.get(f"{GIT_API_URL}/projects/{encoded_path}", headers=headers)
-                            if resp.status_code == 200:
-                                project_id = resp.json().get("id")
-                            else:
-                                print(f"DEBUG: Failed to get project info. Status: {resp.status_code}, Resp: {resp.text}")
-                        
-                        if project_id:
-                            # Create MR
-                            payload = {
-                                "source_branch": BRANCH,
-                                "target_branch": TARGET_BRANCH,
-                                "title": f"Update OpenL Rules: {clean_name}",
-                                "description": f"Automated update from OpenL Assistant.\n\nFile: {clean_name}",
-                                "remove_source_branch": False
-                            }
-                            resp = requests.post(f"{GIT_API_URL}/projects/{project_id}/merge_requests", headers=headers, json=payload)
-                            
-                            if resp.status_code in [200, 201]:
-                                mr_data = resp.json()
-                                mr_url = mr_data.get("web_url")
-                                mr_message = f"Merge Request created successfully: {mr_url}"
-                            elif resp.status_code == 409:
-                                # MR might already exist, try to find it
-                                mr_message = "Merge Request already exists for this branch."
-                                # Try to fetch existing MRs
-                                resp = requests.get(f"{GIT_API_URL}/projects/{project_id}/merge_requests?state=opened&source_branch={BRANCH}", headers=headers)
-                                if resp.status_code == 200 and resp.json():
-                                    mr_url = resp.json()[0].get("web_url")
-                                    mr_message += f"\nExisting MR: {mr_url}"
-                            else:
-                                mr_message = f"Failed to create MR via API (Status {resp.status_code}): {resp.text}"
-                        else:
-                            mr_message = "Could not determine GitLab Project ID. Please configure GIT_PROJECT_ID in .env."
-
-                    except Exception as mr_e:
-                        print(f"MR Creation Error: {mr_e}")
-                        mr_message = f"Failed to automate Merge Request: {str(mr_e)}"
-                else:
-                    mr_message = "GIT_TOKEN not configured. Please create Merge Request manually."
-
-                final_message = f"File '{clean_name}' saved to {TARGET_DIR}.\nChanges pushed to branch '{BRANCH}'.\n\n{mr_message}"
-                
-                # Cleanup: Delete the file from local repo after push to keep it clean (as requested)
-                background_tasks.add_task(os.remove, save_path)
-                
-                return {
-                    "status": "success", 
-                    "message": final_message,
-                    "mr_url": mr_url
-                }
-            except subprocess.CalledProcessError as e:
-                error_msg = e.stderr.decode() if e.stderr else str(e)
-                print(f"Git Error: {error_msg}")
-                raise HTTPException(status_code=500, detail=f"Git Operation Failed: {error_msg}")
-
-        else:
-            # Save to temp file
-            # Use clean_name for consistency
-            filename = clean_name
-            save_path = os.path.join("generated", filename)
-            os.makedirs("generated", exist_ok=True)
-            wb.save(save_path)
-            
-            # Return the relative download URL
-            # Frontend will prepend the base URL
-            return {"status": "success", "download_url": f"/download/{filename}"}
+        # Save locally first
+        os.makedirs("generated", exist_ok=True)
+        save_path = os.path.join("generated", clean_name)
+        wb.save(save_path)
         
+        if request.create_pr:
+            # Offload Git operations to background task
+            background_tasks.add_task(git_service.create_pr_background, save_path, clean_name)
+            return {
+                "status": "success",
+                "message": f"File generated and background task started to push to Git.\n\nFile: {clean_name}",
+                "download_url": f"/download/{clean_name}"
+            }
+        else:
+            return {
+                "status": "success", 
+                "download_url": f"/download/{clean_name}"
+            }
+
     except Exception as e:
-        import traceback
         traceback.print_exc()
-        print(f"Error generating Excel: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/download/{filename}")
