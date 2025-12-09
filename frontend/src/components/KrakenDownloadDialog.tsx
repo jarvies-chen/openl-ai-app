@@ -61,10 +61,68 @@ const DownloadDialog: React.FC<DownloadDialogProps> = ({
         }
     };
 
-    const handleDownload = () => {
-        if (downloadUrl) {
-            window.open(downloadUrl, '_blank');
-            onClose();
+    const handleDownload = async () => {
+        if (downloadUrl && downloadUrl !== '#') {
+            try {
+                // Fetch the file content
+                const response = await fetch(downloadUrl);
+                if (!response.ok) {
+                    throw new Error('Failed to fetch file');
+                }
+                
+                // Get blob from response
+                const blob = await response.blob();
+                
+                // Try to use File System Access API if available
+                if ('showSaveFilePicker' in window) {
+                    try {
+                        // Show save file dialog
+                        const fileHandle = await (window as any).showSaveFilePicker({
+                            suggestedName: fileName,
+                            types: [
+                                {
+                                    description: 'Kraken Rules File',
+                                    accept: {
+                                        'text/plain': ['.rules', '.txt'],
+                                    },
+                                },
+                            ],
+                        });
+                        
+                        // Write file to selected location
+                        const writable = await fileHandle.createWritable();
+                        await writable.write(blob);
+                        await writable.close();
+                        
+                        onClose();
+                    } catch (err) {
+                        // User cancelled the save dialog or an error occurred
+                        if ((err as any).name !== 'AbortError') {
+                            console.error('Error saving file:', err);
+                            setError('Failed to save file. Please try again.');
+                        }
+                    }
+                } else {
+                    // Fallback for browsers that don't support File System Access API
+                    // Create a temporary URL and use traditional download
+                    const blobUrl = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.href = blobUrl;
+                    link.download = fileName;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(blobUrl);
+                    onClose();
+                }
+            } catch (err) {
+                console.error('Failed to download file:', err);
+                setError('Failed to download file. Please try again.');
+            }
+        } else {
+            // Handle invalid download URL
+            console.error('Invalid download URL:', downloadUrl);
+            setError('Invalid download URL. Please try generating the file again.');
         }
     };
 
