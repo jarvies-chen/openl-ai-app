@@ -29,8 +29,8 @@ ENRICHMENT_PROMPT_TEMPLATE = """Act as an OpenL Tablets Architect. Analyze the p
 ### Phase 2: Calculation (Intermediate Variables)
 - Identify logic that transforms raw data into rule inputs.
 - Create `intermediate_variables` for complex calculations.
-- **CRITICAL SYNTAX**: Use **OpenL BEX/Formula Syntax** for `logic`:
-  - **DATES**: NEVER use `-` or `+` for days/years. NEVER use `Dates.diff` (it does not exist). Use `dateDif(d1, d2, "D")`, `dayDiff(d1, d2)`, `year(d)`, `month(d)`.
+  - **CRITICAL SYNTAX**: Use **OpenL BEX/Formula Syntax** for `logic`:
+  - **DATES**: Use `+` or `-` for adding/subtracting days (e.g., `currentDate + 30`). **NEVER** use `addDays`. Use `dateDif(d1, d2, "D")` for diffs.
   - **STRINGS**: Use `contains(s, "val")`, `startsWith`, `substring`.
   - **VARS**: Use defined variable names.
   - **Example**: `age = year(currentDate) - year(birthDate)` or `daysSince = dateDif(eventDate, currentDate, "D")`.
@@ -59,7 +59,8 @@ DATATYPE_GENERATION_PROMPT_TEMPLATE = """You are an OpenL Tablets Developer. Gen
 **Instructions**:
 - Generate the OpenL `Datatype` definitions.
 - **Structure**:
-  - Header: `Datatype <Name>`
+  - Header: `Datatype <Name>` (e.g., `Datatype Employment` NOT `Datatype Employment String`).
+  - **CRITICAL**: Do NOT include a return type in the Header. `Datatype <Name>` ONLY.
   - Rows: `[["Type", "FieldName"], ...]` (Vertical table).
   - **Ensure each row is a JSON list of strings, e.g. ["String", "firstName"].**
 - **CRITICAL Rules**:
@@ -113,7 +114,14 @@ DECISION_TABLE_GENERATION_PROMPT_TEMPLATE = """You are an OpenL Tablets Develope
   - **Rows must be lists of strings.**
   - Row 1: `["C1", "C2", "RET1"]` (Condition/Return codes).
   - Row 2: `["expr1 >= limit", "expr2 == val", "retVarName"]`.
-    - **CRITICAL PARAMETERIZATION**: You **MUST** replace any constant values (e.g. `28`, `true`) in the expression with a Variable Name defined in Row 3.
+    - **CRITICAL PARAMETERIZATION**: You **MUST** replace any constant values (e.g. `28`, `true`, `"terminated"`) in the expression with a Variable Name defined in Row 3.
+    - **STRINGS**: If comparing strings (e.g., `status == 'Active'`), you MUST use a variable: `status == statusVar`. Do NOT leave `'Active'` in the expression.
+    - **EQUALITY CHECKS**: For `field == value`, Row 2 MUST be `field == varParam`. Row 3 defines `String varParam`. Row 4 MUST contain `'value'`.
+    - **MULTI-VARIABLE COMPARISON**: If comparing TWO variables (e.g. `p.d1 > p.d2`), you CANNOT parameterize both.
+      - **Solution**: Set Row 3 Parameter to `Boolean <name>` (e.g. `Boolean checkDates`).
+      - Set Row 4 Value to `true` (or `false`).
+      - **Example**: Row 2: `p.end > p.start` | Row 3: `Boolean isValidRange` | Row 4: `true`.
+    - **ERROR PREVENTION**: Do NOT put `True` in Row 4 for a String parameter. If Row 3 says `String`, Row 4 must be a String.
     - **CRITICAL RETURN**: The Return Column in Row 2 **MUST** contain the return variable name (e.g. `result`). Do **NOT** put `True` or `False`.
     - **GOOD**: `dateDif(emp.start, emp.currentDate, "D") >= minDays` | `result`
     - **CRITICAL OPERATORS**: Do **NOT** use `AND`, `OR`. Use `&&`, `||`.
@@ -125,10 +133,25 @@ DECISION_TABLE_GENERATION_PROMPT_TEMPLATE = """You are an OpenL Tablets Develope
   - **CRITICAL PREFIXING**:
     - **FIELDS**: If a variable IS a field of the Datatype (e.g. `workSchedule` in `Employment`), you **MUST** prefix it (e.g. `emp.workSchedule`).
     - **INTERMEDIATE VARIABLES**: If a variable (e.g. `isDisabled`) is listed in `Intermediate Variables` context with logic, you **MUST** INLINE that logic (after Fuzzy Match).
-    - **SAFETY NET (PARAMETERS)**: If a variable is **NOT** a field AND **NOT** an intermediate variable, you **MUST** define it as a Parameter in the Header. Do NOT prefix it.
+    - **SAFETY NET (PARAMETERS)**: Only define a Parameter in the Header if the variable is **NOT** a field AND **NOT** an intermediate variable.
+      - **CRITICAL CHECK**: Look at `Vocabulary` AND `Intermediate Variables`. If `isCancerDiagnosis` is in ANY list, do NOT make it a Header Parameter. Use the existing one.
     - **DEFAULT**: If you are unsure, default to **Parameter** (No Prefix). This is safer than Invalid Field error.
     - **CHECK**: 1. Field? (Prefix `emp.`). 2. Intermediate? (Inline Logic). 3. Unknown? (Parameter).
-  - Row 3: `["Type limit", "Type val", "Type retVarName"]` (e.g. `["Integer minDays", "Boolean result"]`). You **MUST** define a variable name for **EVERY** column.
+    - **NAMING CONFLICT**: If you create a Header Parameter (e.g. `Boolean isCancer`), the Row 3 Parameter Name **MUST BE DIFFERENT** (e.g. `Boolean isCancerVal`).
+      - **FORBIDDEN**: Header `isCancer` AND Row 3 `isCancer`. This causes "Variable already defined" error.
+      - **CORRECT**: Header `isCancer` AND Row 3 `isCancerParam`.
+  - Row 3: `["Type limit", "Type val", "Type retVarName"]` (e.g. `["Integer minDays", "Boolean result"]`).
+     - **CRITICAL ALIGNMENT (COUNT CHECK)**:
+       - 1. Count the number of columns in Row 1 (e.g. `["C1", "C2", "RET1"]` = 3 columns).
+       - 2. You **MUST** generate EXACTLY that many strings in Row 3 (e.g. `["Boolean c1", "Boolean c2", "Boolean ret"]`).
+       - 3. **NEVER** generate fewer items. If a column has no obvious parameter, **INVENT** one (e.g. `Boolean checkVal`).
+     - **UNIVERSAL PARAMETERIZATION**:
+       - 1. **Standard**: `age > minAge` -> Row 3 `Integer minAge`.
+       - 2. **Field/Complex**: `p.age > 18` OR `p.d1 > p.d2` -> **Create Boolean Parameter**.
+         - Row 3: `Boolean checkAge` (or `checkDates`).
+         - Row 4: `True`.
+     - **RET1 RULE**: The LAST item in Row 3 corresponds to RET1. It MUST be defined (e.g. `Boolean result`).
+     - **Constraint**: ONE parameter per column. If you defined 3 columns, you must define 3 parameters.
   - Row 4+: Values `["500", "True"]` etc. Put the constant values here.
   - **Example JSON (List of Tables)**:
     [
@@ -156,7 +179,10 @@ DECISION_TABLE_GENERATION_PROMPT_TEMPLATE = """You are an OpenL Tablets Develope
   - If the rule uses an Intermediate Variable, ensure it is passed as a parameter OR inlined as described above.
   - For Boolean rules, include the "True" case.
   - **IMPORTANT**: Do NOT include an "Otherwise" row.
-  - **Date Syntax**: For `dateDif` or `addDays`, unit MUST utilize DOUBLE QUOTES (e.g. `"D"`, `"Y"`). Example: `dateDif(d1, d2, "D")`.
+  - **Date Syntax**: For `dateDif`, unit MUST utilize DOUBLE QUOTES (e.g. `"D"`, `"Y"`). Example: `dateDif(d1, d2, "D")`.
+  - **Date Math**: Use `date + days` or `date - days`.
+  - **CRITICAL FORBIDDEN**: NEVER use `dateAdd`, `addDays`, `Dates.add`, or `Dates.diff`. These do NOT exist.
+  - **EXAMPLE**: `terminationDate + 30` (Correct). `dateAdd(terminationDate, 30)` (WRONG).
 
 Output valid JSON describing the Decision Tables.
 """
