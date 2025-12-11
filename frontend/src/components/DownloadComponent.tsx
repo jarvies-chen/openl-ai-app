@@ -20,6 +20,8 @@ export default function DownloadComponent({
     const [createPr, setCreatePr] = useState(false);
     const [prMessage, setPrMessage] = useState<string | null>(null);
     const [mrUrl, setMrUrl] = useState<string | null>(null);
+    const [sourceBranch, setSourceBranch] = useState<string | null>(null);
+    const [targetBranch, setTargetBranch] = useState<string | null>(null);
     const [autoDownloaded, setAutoDownloaded] = useState(false);
 
     const handleGenerate = async () => {
@@ -33,6 +35,8 @@ export default function DownloadComponent({
         setDownloadUrl(null);
         setPrMessage(null);
         setMrUrl(null);
+        setSourceBranch(null);
+        setTargetBranch(null);
         setAutoDownloaded(false);
 
         try {
@@ -40,25 +44,23 @@ export default function DownloadComponent({
 
             if (createPr) {
                 // Handle Git/PR success
-                if (result && result.message) {
-                    setPrMessage(result.message);
-                    if (result.mr_url) {
-                        setMrUrl(result.mr_url);
-                    }
-                } else {
-                    setPrMessage("Merge Request created successfully (details unavailable).");
+                if (result) {
+                    // Always set message if available, or fallback
+                    setPrMessage(result.message || "Merge Request created successfully.");
+
+                    if (result.mr_url) setMrUrl(result.mr_url);
+                    if (result.source_branch) setSourceBranch(result.source_branch);
+                    if (result.target_branch) setTargetBranch(result.target_branch);
                 }
             } else {
-                // Handle Download
+                // Handle Download Logic (unchanged)
                 if (result && result.download_url) {
-                    // Prepend base URL if the result is a relative path
                     const baseUrl = api.defaults.baseURL || '';
                     const fullUrl = result.download_url.startsWith('http')
                         ? result.download_url
                         : `${baseUrl}${result.download_url}`;
                     setDownloadUrl(fullUrl);
 
-                    // Auto-download
                     const link = document.createElement('a');
                     link.href = fullUrl;
                     link.download = filename ? `${filename.replace(/\.[^/.]+$/, "")}.xlsx` : 'OpenL_Rules.xlsx';
@@ -67,7 +69,6 @@ export default function DownloadComponent({
                     document.body.removeChild(link);
                     setAutoDownloaded(true);
                 } else {
-                    // Fallback simulation
                     setDownloadUrl('#');
                 }
             }
@@ -124,7 +125,7 @@ export default function DownloadComponent({
                     </button>
                     {createPr && (
                         <p className="text-xs text-gray-500 mt-1">
-                            File will be pushed to branch 'openl-ai-demo' and a Merge Request to 'development' will be created.
+                            File will be pushed and a Merge Request will be created.
                         </p>
                     )}
                 </div>
@@ -138,36 +139,43 @@ export default function DownloadComponent({
                     {prMessage ? (
                         <div className="p-4 bg-green-50 border border-green-200 rounded-xl text-left">
                             <h4 className="font-bold text-green-800 mb-2">Merge Request Created</h4>
-                            <p className="text-green-700 text-sm whitespace-pre-wrap break-words">
-                                {prMessage.split(/((?:https?:\/\/|www\.)[^\s]+)/g).map((part, i) =>
-                                    /((?:https?:\/\/|www\.)[^\s]+)/g.test(part) ? (
-                                        <a
-                                            key={i}
-                                            href={part}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="underline font-bold hover:text-green-900 break-all"
-                                        >
-                                            {part}
-                                        </a>
-                                    ) : part
-                                )}
+
+                            {sourceBranch && targetBranch && (
+                                <p className="text-sm text-gray-700 mb-3 bg-white p-2 rounded border border-green-100">
+                                    Merged <b>{sourceBranch}</b> into <b>{targetBranch}</b>
+                                </p>
+                            )}
+
+                            <p className="text-green-700 text-sm whitespace-pre-wrap break-words mb-4">
+                                {prMessage}
                             </p>
 
                             {mrUrl && (
-                                <a
-                                    href={mrUrl}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="mt-4 flex items-center justify-center gap-2 w-full py-2 px-4 rounded-lg font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors"
-                                >
-                                    View Merge Request
-                                </a>
+                                <div className="flex flex-col gap-2">
+                                    <div className="text-xs text-gray-500 uppercase font-semibold">MR Link:</div>
+                                    <a
+                                        href={mrUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-blue-600 underline break-all hover:text-blue-800 font-medium"
+                                    >
+                                        {mrUrl}
+                                    </a>
+
+                                    <a
+                                        href={mrUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="mt-2 flex items-center justify-center gap-2 w-full py-2 px-4 rounded-lg font-medium text-white bg-blue-600 hover:bg-blue-700 transition-colors"
+                                    >
+                                        Open Merge Request
+                                    </a>
+                                </div>
                             )}
 
                             <button
-                                onClick={() => { setPrMessage(null); setCreatePr(false); setMrUrl(null); }}
-                                className="mt-2 w-full py-2 text-sm text-green-700 bg-white border border-green-300 rounded-lg hover:bg-green-50"
+                                onClick={() => { setPrMessage(null); setCreatePr(false); setMrUrl(null); setSourceBranch(null); setTargetBranch(null); }}
+                                className="mt-4 w-full py-2 text-sm text-green-700 bg-white border border-green-300 rounded-lg hover:bg-green-50"
                             >
                                 Start New Generate
                             </button>
