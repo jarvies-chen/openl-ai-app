@@ -12,6 +12,7 @@ from langchain_core.output_parsers import JsonOutputParser
 from langchain_postgres import PGVector
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
+from openpyxl.cell.cell import TYPE_STRING
 
 from models import Rule, Datatype, ExtractionResponse, GenerationRequest, IntermediateVariable, HelperRuleDefinition
 from prompts import (
@@ -19,6 +20,7 @@ from prompts import (
     DATATYPE_GENERATION_PROMPT_TEMPLATE,
     SPREADSHEET_GENERATION_PROMPT_TEMPLATE,
     DECISION_TABLE_GENERATION_PROMPT_TEMPLATE,
+    TEST_GENERATION_PROMPT_TEMPLATE,
     ORCHESTRATOR_PROMPT_TEMPLATE
 )
 
@@ -59,17 +61,48 @@ class GenerationService:
             print(f"RAG Retrieval failed: {e}")
             return ""
 
-    async def enrich_rules(self, rules: List[Any], text: str) -> ExtractionResponse:
+    async def enrich_rules(self, rules: List[Any], text: str, filename: Optional[str] = None) -> ExtractionResponse:
         """
         Architect Phase: Analyze rules and define the 3-layer structure.
+        Uses a local cache (enrich_cache/) if logic has been generated for this file before.
         """
+        # 0. Cache Lookup
+        CACHE_DIR = "enrich_cache"
+        existing_context_str = ""
+        cached_data = None
+        cache_path = None
+        
+        if filename:
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            # Sanitize filename (basic)
+            safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', filename)
+            cache_path = os.path.join(CACHE_DIR, f"{safe_name}.json")
+            
+            if os.path.exists(cache_path):
+                print(f"[CACHE] Hit for {filename}")
+                try:
+                    with open(cache_path, "r", encoding="utf-8") as f:
+                        cached_data = json.load(f)
+                    
+                    # Format for Prompt
+                    existing_datatypes = cached_data.get("datatypes", [])
+                    existing_vars = cached_data.get("intermediate_variables", [])
+                    
+                    dt_str = "\n".join([f"- Datatype {d['name']}: {[f['name'] for f in d['fields']]}" for d in existing_datatypes])
+                    var_str = "\n".join([f"- Variable {v['name']} ({v['logic']})" for v in existing_vars])
+                    
+                    existing_context_str = f"**EXISTING DATATYPES**:\n{dt_str}\n\n**EXISTING VARIABLES**:\n{var_str}"
+                except Exception as e:
+                    print(f"[CACHE] Read Error: {e}")
+
         # 1. Retrieve RAG Context for OpenL Syntax (Functions, Dates, etc.)
         rag_context = self._get_rag_context("OpenL Functions DateUtils BEX Syntax")
         
         parser = JsonOutputParser(pydantic_object=ExtractionResponse)
+        # Pass existing_context to prompt
         prompt = PromptTemplate(
             template=ENRICHMENT_PROMPT_TEMPLATE,
-            input_variables=["rules", "text", "context"],
+            input_variables=["rules", "text", "context", "existing_context"],
             partial_variables={"format_instructions": parser.get_format_instructions()},
         )
         
@@ -79,7 +112,13 @@ class GenerationService:
         rules_dict = [r.dict() if hasattr(r, 'dict') else r for r in rules]
         
         try:
-            result = chain.invoke({"rules": rules_dict, "text": text, "context": rag_context})
+            # Pass existing_context argument
+            result = chain.invoke({
+                "rules": rules_dict, 
+                "text": text, 
+                "context": rag_context,
+                "existing_context": existing_context_str
+            })
             
             # Post-Processing: Fix common Syntax Hallucinations
             # 1. Fix Dates.diff -> dateDif
@@ -91,6 +130,50 @@ class GenerationService:
                         v['logic'] = v['logic'].replace("Dates.diff", "dateDif")
                         if old_logic != v['logic']:
                             print(f"[DEBUG] Regex Replaced: {old_logic} -> {v['logic']}")
+                            
+            # 2. Cache Update (Save Result)
+            # 2. Cache Update (Merge & Save)
+            if filename and cache_path:
+                try:
+                    # Helper to merge Datatypes
+                    def _merge_datatypes(old_list, new_list):
+                        dt_map = {d['name']: d for d in old_list}
+                        for new_dt in new_list:
+                            name = new_dt['name']
+                            if name in dt_map:
+                                # Merge fields: Add new fields if they don't exist
+                                existing_fields = {f['name'] for f in dt_map[name]['fields']}
+                                for new_f in new_dt['fields']:
+                                    if new_f['name'] not in existing_fields:
+                                        dt_map[name]['fields'].append(new_f)
+                            else:
+                                dt_map[name] = new_dt
+                        return list(dt_map.values())
+
+                    # Helper to merge Variables (Overwrite by name)
+                    def _merge_variables(old_list, new_list):
+                        v_map = {v['name']: v for v in old_list}
+                        for new_v in new_list:
+                            v_map[new_v['name']] = new_v
+                        return list(v_map.values())
+
+                    final_datatypes = result.get("datatypes", [])
+                    final_vars = result.get("intermediate_variables", [])
+                    
+                    if cached_data:
+                        final_datatypes = _merge_datatypes(cached_data.get("datatypes", []), final_datatypes)
+                        final_vars = _merge_variables(cached_data.get("intermediate_variables", []), final_vars)
+
+                    cache_payload = {
+                        "datatypes": final_datatypes,
+                        "intermediate_variables": final_vars
+                    }
+                    
+                    with open(cache_path, "w", encoding="utf-8") as f:
+                        json.dump(cache_payload, f, indent=2)
+                    print(f"[CACHE] Updated and Saved to {cache_path}")
+                except Exception as e:
+                    print(f"[CACHE] Write Error: {e}")
                         
             return ExtractionResponse(**result)
         except Exception as e:
@@ -197,7 +280,7 @@ class GenerationService:
 
 
         
-        rules_text_c = "\n".join([f"- {r.name}: {r.condition}" for r in decision_rules])
+        rules_text_c = "\n".join([f"- ID: {r.id if hasattr(r, 'id') else 'Rule'} | Name: {r.name}: {r.condition}" for r in decision_rules])
         
         prompt_c = PromptTemplate(
             template=DECISION_TABLE_GENERATION_PROMPT_TEMPLATE,
@@ -216,7 +299,27 @@ class GenerationService:
         res_c_raw = res_c_raw.replace("Dates.diff", "dateDif")
         rules_structure = self._parse_llm_json(res_c_raw)
 
-        # 4. Orchestration / Assembly
+        # 4. Phase D: Test Generation
+        # ---------------------------
+        test_context = self._get_rag_context("OpenL Test Table Syntax validation _res_ _error_")
+        prompt_d = PromptTemplate(
+            template=TEST_GENERATION_PROMPT_TEMPLATE,
+            input_variables=["rules_structure", "datatypes_summary", "context"]
+        )
+        chain_d = prompt_d | self.llm
+        
+        # Serialize rules structure for context
+        rules_structure_str = json.dumps(rules_structure, indent=2)
+        
+        res_d_raw = chain_d.invoke({
+            "rules_structure": rules_structure_str,
+            "datatypes_summary": datatypes_input,
+            "context": test_context
+        })
+        test_structure = self._parse_llm_json(res_d_raw)
+        tests = test_structure.get("tables", []) if test_structure else []
+
+        # 5. Orchestration / Assembly
         # ---------------------------
         
         spreadsheets = spreadsheet_structure.get("tables", []) if spreadsheet_structure else []
@@ -254,6 +357,10 @@ class GenerationService:
                 {
                     "name": "Rules",
                     "tables": unique_spreadsheets + rules
+                },
+                {
+                    "name": "Tests",
+                    "tables": tests
                 }
             ]
         }
@@ -320,7 +427,15 @@ class GenerationService:
                 # Write Rows
                 for row in rows:
                     for col_idx, val in enumerate(row):
-                        ws.cell(row=current_row, column=col_idx+1, value=val)
+                        cell = ws.cell(row=current_row, column=col_idx+1, value=val)
+                        # OpenL formulas starting with '=' cause Excel errors if not treated as text
+                        # User provided fix: Force String type + quotePrefix
+                        if isinstance(val, str) and val.startswith("="):
+                            cell.data_type = TYPE_STRING
+                            if hasattr(cell, "quotePrefix"):
+                                cell.quotePrefix = True
+                            elif hasattr(cell, "quote_prefix"):
+                                cell.quote_prefix = True
                     current_row += 1
                 
                 # Spacing

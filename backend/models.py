@@ -79,6 +79,7 @@ class SaveVersionRequest(BaseModel):
 class EnrichmentRequest(BaseModel):
     rules: List[Rule]
     text: str # Original text context for enrichment
+    filename: Optional[str] = None # Filename for caching context
 
 class ExtractionRequest(BaseModel):
     text: str

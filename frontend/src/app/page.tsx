@@ -203,7 +203,8 @@ export default function Home() {
     setLoadingMessage('Enriching rules with OpenL syntax...');
     try {
       // Pass ALL candidates to enrichment (selection removed in Step 2)
-      const result = await enrichRules(candidates, fullText);
+      // Pass currentFilename for caching/persistence
+      const result = await enrichRules(candidates, fullText, currentFilename);
 
       // Initialize all rules as selected by default in Step 3
       setRules(result.rules.map(r => ({ ...r, selected: true })));

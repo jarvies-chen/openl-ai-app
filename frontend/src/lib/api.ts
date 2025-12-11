@@ -165,8 +165,8 @@ export const extractCandidates = async (text: string): Promise<CandidateRule[]> 
   return response.data;
 };
 
-export const enrichRules = async (rules: CandidateRule[], text: string): Promise<ExtractionResponse> => {
-  const response = await api.post('/enrich-rules', { rules, text });
+export const enrichRules = async (rules: CandidateRule[], text: string, filename?: string): Promise<ExtractionResponse> => {
+  const response = await api.post('/enrich-rules', { rules, text, filename });
   return response.data;
 };
 

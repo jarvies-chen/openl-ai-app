@@ -302,7 +302,7 @@ async def extract_candidates(request: ExtractionRequest):
 async def enrich_rules(request: EnrichmentRequest):
     try:
         # Delegate to GenerationService (The Architect)
-        return await gen_service.enrich_rules(request.rules, request.text)
+        return await gen_service.enrich_rules(request.rules, request.text, request.filename)
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -399,12 +399,18 @@ async def generate_excel(request: GenerationRequest, background_tasks: Backgroun
         wb.save(save_path)
         
         if request.create_pr:
-            # Offload Git operations to background task
-            background_tasks.add_task(git_service.create_pr_background, save_path, clean_name)
+            # Synchronous Git Operation (so we can return the MR URL)
+            git_result = await git_service.create_pr_sync(save_path, clean_name, delete_after=False) # Don't delete yet if download is needed? Actually download is from 'generated/', sync uses temp path content?
+            # Wait, create_pr_sync copies from save_path to repo_path. 
+            # We should keep save_path in 'generated/' so user can download it.
+            
             return {
                 "status": "success",
-                "message": f"File generated and background task started to push to Git.\n\nFile: {clean_name}",
-                "download_url": f"/download/{clean_name}"
+                "message": f"File generated and pushed to Git.\n\nFile: {clean_name}",
+                "download_url": f"/download/{clean_name}",
+                "mr_url": git_result.get("mr_url", ""),
+                "source_branch": git_result.get("source_branch", ""),
+                "target_branch": git_result.get("target_branch", "")
             }
         else:
             return {

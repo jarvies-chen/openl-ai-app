@@ -35,13 +35,22 @@ class GitService:
             logger.error(f"Git command failed: {' '.join(args)}. Error: {error_msg}")
             raise Exception(f"Git Error: {error_msg}")
 
-    def create_pr_background(self, file_path: str, clean_name: str, delete_after: bool = True):
+    async def create_pr_sync(self, file_path: str, clean_name: str, delete_after: bool = True) -> dict:
         """
-        Background task to handle the full Git workflow:
+        Synchronous task to handle the full Git workflow:
         Checkout -> Pull -> Add -> Commit -> Push -> Create MR
+        Returns details about the created MR.
         """
+        result = {
+            "status": "error",
+            "message": "",
+            "mr_url": "",
+            "source_branch": self.branch,
+            "target_branch": self.target_branch
+        }
+        
         try:
-            logger.info(f"Starting Git background task for {clean_name}")
+            logger.info(f"Starting Git sync task for {clean_name}")
             
             # Ensure target directory exists
             if not os.path.exists(self.target_dir):
@@ -71,9 +80,14 @@ class GitService:
                 # If nothing to commit (clean working tree), that's fine
                 if "nothing to commit" in str(e).lower():
                     logger.info("Nothing to commit.")
-                    return "No changes to commit."
-                raise e
-
+                    result["message"] = "No changes to commit."
+                    result["status"] = "skipped"
+                    # Still try to create MR if branch has commits? Or just return?
+                    # If nothing to commit, likely no changes, so MR might be empty or invalid. 
+                    # But let's proceed to get existing MR url if any.
+                else:
+                    raise e
+ 
             # 5. Push
             self._run_git(["push", "origin", self.branch])
             
@@ -85,10 +99,18 @@ class GitService:
             # Cleanup temp file if requested (not the repo file, but the source temp file)
             if delete_after and os.path.exists(file_path):
                  os.remove(file_path)
+            
+            result.update({
+                "status": "success",
+                "message": f"Successfully pushed to {self.branch} and created MR.",
+                "mr_url": mr_url
+            })
+            return result
 
         except Exception as e:
-            logger.error(f"Background Git Task Failed: {e}")
-            # In a real app, we might want to update a status database
+            logger.error(f"Git Task Failed: {e}")
+            result["message"] = str(e)
+            return result
             
     def _create_merge_request(self, filename: str) -> str:
         if not self.token:
